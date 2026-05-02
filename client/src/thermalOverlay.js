@@ -50,13 +50,19 @@ export async function createAnnotatedJpegFromSource(src, scale, regions = null) 
 function annotateThermalCanvas(canvas, context, scale, regions) {
   const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
   const analysis = analyzeThermalImage(imageData, canvas.width, canvas.height, regions);
-  const hotBoxes = analysis.hotSpots.map((spot) => spot.box);
+  const hotSpots = analysis.hotSpots
+    .map((spot) => ({
+      box: spot.box,
+      brightness: averageBoxBrightness(imageData.data, canvas.width, canvas.height, spot.box)
+    }))
+    .sort((a, b) => b.brightness - a.brightness);
+  const temperatures = buildSpotTemperatures(hotSpots, scale);
 
-  for (const box of hotBoxes) {
-    drawBox(context, box, "#ff2d2d", formatTemperature(scale.temperature), canvas);
+  for (let index = 0; index < hotSpots.length; index += 1) {
+    drawBox(context, hotSpots[index].box, "#ff2d2d", formatTemperature(temperatures[index]), canvas);
   }
 
-  drawAmbientLabel(context, hotBoxes, "#2d8cff", formatTemperature(scale.ambiance), canvas);
+  drawAmbientLabel(context, "#2d8cff", `Ambient: ${formatTemperature(scale.ambiance)}`, canvas);
 }
 
 function analyzeThermalImage(imageData, width, height, regions) {
@@ -279,28 +285,57 @@ function drawBox(context, box, color, label, canvas) {
   context.restore();
 }
 
-function drawAmbientLabel(context, hotBoxes, color, label, canvas) {
-  if (!hotBoxes.length) return;
-
+function drawAmbientLabel(context, color, label, canvas) {
   const dimensions = measureLabel(context, label, canvas);
-  const anchor = unionBoxes(hotBoxes);
-  const gap = Math.max(5, Math.round(dimensions.fontSize * 0.35));
-  const candidates = [
-    { left: anchor.x, top: anchor.y + anchor.height + gap },
-    { left: anchor.x, top: anchor.y - dimensions.height - gap },
-    { left: anchor.x + anchor.width + gap, top: anchor.y },
-    { left: anchor.x - dimensions.width - gap, top: anchor.y },
+  const position = clampLabelPosition(
     { left: 4, top: canvas.height - dimensions.height - 4 },
-    { left: 4, top: 4 }
-  ];
-  const position = candidates
-    .map((candidate) => clampLabelPosition(candidate, dimensions, canvas))
-    .find((candidate) => !hotBoxes.some((box) => boxesOverlap(labelRect(candidate, dimensions), box))) ||
-    clampLabelPosition(candidates[0], dimensions, canvas);
+    dimensions,
+    canvas
+  );
 
   context.save();
   drawLabelAt(context, label, position.left, position.top, color, dimensions);
   context.restore();
+}
+
+function buildSpotTemperatures(hotSpots, scale) {
+  if (!hotSpots.length) return [];
+
+  if (hotSpots.length === 1) {
+    return [scale.temperature];
+  }
+
+  const brightnessValues = hotSpots.map((spot) => spot.brightness);
+  const brightest = Math.max(...brightnessValues);
+  const darkest = Math.min(...brightnessValues);
+  const brightnessRange = Math.max(1, brightest - darkest);
+  const thermalRange = Math.max(0, scale.temperature - scale.ambiance);
+  const maxDrop = Math.max(0.5, thermalRange * 0.2);
+
+  return brightnessValues.map((brightness) => {
+    const brightnessDrop = (brightest - brightness) / brightnessRange;
+    return clamp(scale.temperature - brightnessDrop * maxDrop, scale.ambiance, scale.temperature);
+  });
+}
+
+function averageBoxBrightness(data, width, height, box) {
+  const xStart = Math.max(0, Math.floor(box.x));
+  const yStart = Math.max(0, Math.floor(box.y));
+  const xEnd = Math.min(width, Math.ceil(box.x + box.width));
+  const yEnd = Math.min(height, Math.ceil(box.y + box.height));
+
+  let total = 0;
+  let count = 0;
+
+  for (let y = yStart; y < yEnd; y += 1) {
+    for (let x = xStart; x < xEnd; x += 1) {
+      const offset = (y * width + x) * 4;
+      total += thermalBrightness(data[offset], data[offset + 1], data[offset + 2]);
+      count += 1;
+    }
+  }
+
+  return count ? total / count : 0;
 }
 
 function drawLabel(context, label, box, color, canvas) {

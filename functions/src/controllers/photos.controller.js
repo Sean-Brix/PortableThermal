@@ -1,6 +1,7 @@
 "use strict";
 
 const photoService = require("../services/photo.service");
+const scanService = require("../services/scan.service");
 
 async function listPhotos(_req, res, next) {
   try {
@@ -19,6 +20,22 @@ async function createPhoto(req, res, next) {
       temperature: req.body?.temperature,
       ambiance: req.body?.ambiance
     });
+
+    // Log the scan
+    try {
+      await scanService.createScanLog({
+        mode: "single",
+        temperature: photo.temperature,
+        ambiance: photo.ambiance,
+        photoPath: photo.path,
+        equipment: req.body?.equipment || "Unknown",
+        location: req.body?.location || "Unknown",
+        hotspotCount: 0
+      });
+    } catch (_err) {
+      // Logging error shouldn't fail the photo save
+    }
+
     res.status(201).json(photo);
   } catch (error) {
     next(error);
