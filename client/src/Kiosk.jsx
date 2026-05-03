@@ -40,6 +40,119 @@ const RECOMMENDATIONS = {
   ]
 };
 
+// EC 60364-6:2016 TODO recommendations (used for interactive checklists)
+const EC_TODO = [
+  "EC 60364-6:2016",
+  "Tighten / Secure Connections",
+  "Inspect / Clean for Corrosion or Oxidation",
+  "Check for Signs of Arcing or Tracking",
+  "Verify Load / Current Balance",
+  "Ensure Proper Ventilation / Clean Dust or Debris"
+];
+
+const COMPARATIVE_RECOMMENDATIONS = [
+  {
+    key: "normal",
+    label: "No significant difference",
+    action: "Continue routine monitoring.",
+    tone: "normal"
+  },
+  {
+    key: "possible",
+    label: "Possible deficiency",
+    action: "Possible deficiency; warrants investigation.",
+    tone: "warning"
+  },
+  {
+    key: "probable",
+    label: "Probable deficiency",
+    action: "Indicates probable deficiency; repair as time permits.",
+    tone: "warning"
+  },
+  {
+    key: "major",
+    label: "Major discrepancy",
+    action: "Major discrepancy; repair immediately.",
+    tone: "critical"
+  }
+];
+
+function computeReferenceTemperature(values) {
+  const finiteValues = values.filter((value) => Number.isFinite(value));
+  if (finiteValues.length === 0) return 0;
+  if (finiteValues.length === 1) return finiteValues[0];
+
+  const mean = finiteValues.reduce((sum, value) => sum + value, 0) / finiteValues.length;
+  const variance = finiteValues.reduce((sum, value) => sum + Math.pow(value - mean, 2), 0) / finiteValues.length;
+  const stdDev = Math.sqrt(variance);
+
+  if (stdDev === 0) return mean;
+
+  const filtered = finiteValues.filter((value) => Math.abs((value - mean) / stdDev) <= 2.0);
+  const safeValues = filtered.length > 0 ? filtered : finiteValues;
+  return safeValues.reduce((sum, value) => sum + value, 0) / safeValues.length;
+}
+
+function getComparativeRecommendation(delta) {
+  if (!Number.isFinite(delta) || delta < 1) {
+    return COMPARATIVE_RECOMMENDATIONS[0];
+  }
+
+  const rounded = Math.round(delta);
+  if (rounded <= 3) return COMPARATIVE_RECOMMENDATIONS[1];
+  if (rounded <= 15) return COMPARATIVE_RECOMMENDATIONS[2];
+  return COMPARATIVE_RECOMMENDATIONS[3];
+}
+
+function getWorstComparativeRecommendation(deltas) {
+  return deltas.reduce((worst, delta) => {
+    const current = getComparativeRecommendation(delta);
+    const currentRank = COMPARATIVE_RECOMMENDATIONS.findIndex((item) => item.key === current.key);
+    const worstRank = COMPARATIVE_RECOMMENDATIONS.findIndex((item) => item.key === worst.key);
+    return currentRank > worstRank ? current : worst;
+  }, COMPARATIVE_RECOMMENDATIONS[0]);
+}
+
+function buildComparativeAnalysisSummary(scans) {
+  const temps = scans.map((scan) => Number(scan.temperature)).filter((value) => Number.isFinite(value));
+  const tref = computeReferenceTemperature(temps);
+  const deltas = scans.map((scan) => Number(scan.temperature) - tref);
+  const finiteDeltas = deltas.filter((value) => Number.isFinite(value));
+  const avgDelta = finiteDeltas.length
+    ? finiteDeltas.reduce((sum, value) => sum + value, 0) / finiteDeltas.length
+    : 0;
+  const variance = finiteDeltas.length
+    ? finiteDeltas.reduce((sum, value) => sum + Math.pow(value - avgDelta, 2), 0) / finiteDeltas.length
+    : 0;
+
+  return {
+    scanCount: scans.length,
+    tref,
+    avgDelta,
+    peakDelta: finiteDeltas.length ? Math.max(...finiteDeltas) : 0,
+    avgTemperature: temps.length ? temps.reduce((sum, value) => sum + value, 0) / temps.length : 0,
+    minTemperature: temps.length ? Math.min(...temps) : 0,
+    maxTemperature: temps.length ? Math.max(...temps) : 0,
+    standardDeviation: Math.sqrt(variance),
+    classificationCounts: {
+      Critical: scans.filter((scan) => scan.classification === "Critical").length,
+      Warning: scans.filter((scan) => scan.classification === "Warning").length,
+      Normal: scans.filter((scan) => scan.classification === "Normal").length
+    },
+    overallRecommendation: getWorstComparativeRecommendation(finiteDeltas),
+    scanAnalyses: scans.map((scan, index) => {
+      const delta = Number(scan.temperature) - tref;
+      return {
+        id: scan.scanLogId || scan.id || scan.name,
+        index: index + 1,
+        temperature: Number(scan.temperature),
+        delta,
+        recommendation: getComparativeRecommendation(delta)
+      };
+    })
+  };
+}
+
 function classifyReading(temp, ambient) {
   if (!Number.isFinite(temp) || !Number.isFinite(ambient)) return "Unknown";
   const diff = temp - ambient;
@@ -54,6 +167,7 @@ export default function Kiosk({ onAdminRequest }) {
   const streamRef = useRef(null);
   const shootRef = useRef({ activeId: "", completedId: "" });
   const pollCtxRef = useRef({});
+  const comparativeSessionIdRef = useRef("");
 
   const [page, setPage] = useState("idle");
   const [isCameraReady, setCameraReady] = useState(false);
@@ -101,7 +215,7 @@ export default function Kiosk({ onAdminRequest }) {
     }
   }, []);
 
-  const captureAndSave = useCallback(async (overrideScale = null) => {
+  const captureAndSave = useCallback(async (overrideScale = null, logContext = {}) => {
     if (!videoRef.current?.videoWidth) { setError("Camera not ready."); return null; }
     setSaving(true);
     setError("");
@@ -123,12 +237,22 @@ export default function Kiosk({ onAdminRequest }) {
       const res = await fetch(`${API_BASE}/photos`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageData, temperature: scale.temperature, ambiance: scale.ambiance })
+        body: JSON.stringify({
+          imageData,
+          temperature: scale.temperature,
+          ambiance: scale.ambiance,
+          ...logContext
+        })
       });
       if (!res.ok) throw new Error("Failed to save photo.");
       const photo = await res.json();
       setStatus("Captured!");
-      return { ...photo, classification: classifyReading(scale.temperature, scale.ambiance), timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
+      const capturedAt = photo.loggedAt || photo.createdAt || new Date().toISOString();
+      return {
+        ...photo,
+        classification: photo.classification || classifyReading(scale.temperature, scale.ambiance),
+        timestamp: new Date(capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      };
     } catch (err) {
       setError(err.message);
       setStatus("");
@@ -139,14 +263,41 @@ export default function Kiosk({ onAdminRequest }) {
   }, []);
 
   const captureSingleScan = useCallback(async (overrideScale = null) => {
-    const scan = await captureAndSave(overrideScale);
+    const scan = await captureAndSave(overrideScale, { source: "kiosk", mode: "single" });
     if (scan) setLastScan(scan); // replaces previous scan
   }, [captureAndSave]);
 
   const addComparativeScan = useCallback(async (overrideScale = null) => {
-    const scan = await captureAndSave(overrideScale);
-    if (scan) setComparativeScans((prev) => [...prev, scan]);
+    const scan = await captureAndSave(overrideScale, {
+      source: "kiosk",
+      mode: "comparative",
+      sessionId: comparativeSessionIdRef.current || undefined
+    });
+    if (scan) {
+      if (scan.sessionId) {
+        comparativeSessionIdRef.current = scan.sessionId;
+      }
+      setComparativeScans((prev) => [...prev, scan]);
+    }
   }, [captureAndSave]);
+
+  const completeComparativeSession = useCallback(async () => {
+    const sessionId = comparativeSessionIdRef.current;
+    if (!sessionId || comparativeScans.length < 2) return null;
+
+    try {
+      const response = await fetch(`${API_BASE}/scan-sessions/${sessionId}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ analysis: buildComparativeAnalysisSummary(comparativeScans) })
+      });
+      if (!response.ok) throw new Error("Failed to save comparative analysis.");
+      return await response.json();
+    } catch (err) {
+      setError(err.message);
+      return null;
+    }
+  }, [comparativeScans]);
 
   pollCtxRef.current = { page, isSaving, captureSingleScan, addComparativeScan };
 
@@ -185,6 +336,7 @@ export default function Kiosk({ onAdminRequest }) {
     setPage("idle");
     setLastScan(null);
     setComparativeScans([]);
+    comparativeSessionIdRef.current = "";
     setError("");
     setStatus("");
   };
@@ -233,6 +385,7 @@ export default function Kiosk({ onAdminRequest }) {
           error={error}
           scans={comparativeScans}
           onCapture={() => addComparativeScan()}
+          onAnalyze={completeComparativeSession}
           onBack={resetPage}
         />
       )}
@@ -368,6 +521,37 @@ function ClassificationIcon({ classification, size = 13 }) {
   return <CheckCircle2 size={size} className="class-icon normal" />;
 }
 
+// Interactive checklist stored in localStorage per-key
+function Checklist({ items = [], storageKeyPrefix = "checklist", idKey = "default" }) {
+  const key = `${storageKeyPrefix}:${idKey}`;
+  const [checked, setChecked] = useState(() => {
+    try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : {}; } catch { return {}; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem(key, JSON.stringify(checked)); } catch {}
+  }, [key, checked]);
+
+  const toggle = (i) => {
+    setChecked((prev) => ({ ...prev, [i]: !prev[i] }));
+  };
+
+  return (
+    <div className="todo-checklist">
+      <ul>
+        {items.map((it, i) => (
+          <li key={i} className={`todo-item ${checked[i] ? "done" : ""}`}>
+            <label>
+              <input type="checkbox" checked={!!checked[i]} onChange={() => toggle(i)} />
+              <span className="todo-label">{it}</span>
+            </label>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ─── Fullscreen Modal ─────────────────────────────────────────────────────────
 
 function FullscreenModal({ url, onClose }) {
@@ -391,7 +575,7 @@ function SingleScanPage({ videoCallbackRef, isCameraReady, isSaving, status, err
   const [fullscreenUrl, setFullscreenUrl] = useState(null);
 
   const diff = scan ? (Number(scan.temperature) - Number(scan.ambiance)).toFixed(1) : null;
-  const recs = scan ? (RECOMMENDATIONS[scan.classification] ?? RECOMMENDATIONS.Normal) : [];
+  const recs = EC_TODO; // use EC 60364-6:2016 interactive TODO recommendations for single-scan
 
   return (
     <div className="scan-layout single-layout">
@@ -452,27 +636,16 @@ function SingleScanPage({ videoCallbackRef, isCameraReady, isSaving, status, err
                 </div>
               </div>
 
-              {/* Recommendations */}
+              {/* Recommendations (interactive TODO checklist) */}
               <div className="single-recs">
                 <h4>Recommendations</h4>
-                <ul>
-                  {recs.map((r, i) => <li key={i}>{r}</li>)}
-                </ul>
+                <Checklist items={recs} storageKeyPrefix="single-scan" idKey={scan?.id ?? scan?.name ?? scan?.timestamp ?? "single"} />
               </div>
             </>
           )}
         </div>
 
-        <div className="sidebar-capture">
-          <button
-            className={`capture-big-button ${isSaving ? "is-saving" : ""}`}
-            onClick={onCapture}
-            disabled={!isCameraReady || isSaving}
-          >
-            <Camera size={22} strokeWidth={2} />
-            {isSaving ? "Processing..." : scan ? "Rescan" : "Capture"}
-          </button>
-        </div>
+        {/* Capture button removed per request (shoot API still active) */}
       </aside>
 
       {fullscreenUrl && <FullscreenModal url={fullscreenUrl} onClose={() => setFullscreenUrl(null)} />}
@@ -482,9 +655,14 @@ function SingleScanPage({ videoCallbackRef, isCameraReady, isSaving, status, err
 
 // ─── Comparative Analysis Page ────────────────────────────────────────────────
 
-function ComparativeAnalysisPage({ videoCallbackRef, isCameraReady, isSaving, status, error, scans, onCapture, onBack }) {
+function ComparativeAnalysisPage({ videoCallbackRef, isCameraReady, isSaving, status, error, scans, onCapture, onAnalyze, onBack }) {
   const [fullscreenUrl, setFullscreenUrl] = useState(null);
   const [showAnalysis, setShowAnalysis] = useState(false);
+
+  const handleAnalyze = async () => {
+    await onAnalyze?.();
+    setShowAnalysis(true);
+  };
 
   return (
     <div className="scan-layout">
@@ -528,20 +706,13 @@ function ComparativeAnalysisPage({ videoCallbackRef, isCameraReady, isSaving, st
         <div className="sidebar-capture comp-actions">
           <button
             className="analyze-all-btn"
-            onClick={() => setShowAnalysis(true)}
+            onClick={handleAnalyze}
             disabled={scans.length < 2}
           >
             <BarChart2 size={18} />
             Analyze All ({scans.length})
           </button>
-          <button
-            className={`capture-big-button ${isSaving ? "is-saving" : ""}`}
-            onClick={onCapture}
-            disabled={!isCameraReady || isSaving}
-          >
-            <Camera size={22} strokeWidth={2} />
-            {isSaving ? "Processing..." : "Add Scan"}
-          </button>
+          {/* Add Scan button removed — captures still occur via external shoot requests */}
         </div>
       </aside>
 
@@ -556,13 +727,23 @@ function ComparativeAnalysisPage({ videoCallbackRef, isCameraReady, isSaving, st
 function ComparativeAnalysisModal({ scans, onClose }) {
   const [fullscreenUrl, setFullscreenUrl] = useState(null);
 
-  const temps = scans.map((s) => Number(s.temperature));
-  const ambients = scans.map((s) => Number(s.ambiance));
-  const avgTemp = (temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1);
-  const maxTemp = Math.max(...temps);
-  const minTemp = Math.min(...temps);
-  const avgAmbient = (ambients.reduce((a, b) => a + b, 0) / ambients.length).toFixed(1);
-  const chartMax = Math.max(...temps, ...ambients) * 1.15;
+  const temps = scans.map((scan) => Number(scan.temperature));
+  const validTemps = temps.filter((value) => Number.isFinite(value));
+  const tref = computeReferenceTemperature(validTemps);
+  const deltas = scans.map((scan) => Number(scan.temperature) - tref);
+  const avgDelta = deltas.length > 0 ? deltas.reduce((sum, value) => sum + value, 0) / deltas.length : 0;
+  const deltaVariance = deltas.length > 0
+    ? deltas.reduce((sum, value) => sum + Math.pow(value - avgDelta, 2), 0) / deltas.length
+    : 0;
+  const stdDev = Math.sqrt(deltaVariance).toFixed(1);
+  const avgTemp = validTemps.length > 0 ? (validTemps.reduce((sum, value) => sum + value, 0) / validTemps.length).toFixed(1) : "0.0";
+  const maxTemp = validTemps.length > 0 ? Math.max(...validTemps) : 0;
+  const minTemp = validTemps.length > 0 ? Math.min(...validTemps) : 0;
+  const avgDeltaValue = avgDelta.toFixed(1);
+  const maxDelta = deltas.length > 0 ? Math.max(...deltas) : 0;
+  const chartMax = Math.max(maxTemp, tref, 1) * 1.15;
+  const deltaChartMax = Math.max(maxDelta, 1) * 1.15;
+  const overallRecommendation = getWorstComparativeRecommendation(deltas);
 
   const critical = scans.filter((s) => s.classification === "Critical").length;
   const warning  = scans.filter((s) => s.classification === "Warning").length;
@@ -582,24 +763,32 @@ function ComparativeAnalysisModal({ scans, onClose }) {
           <button className="analyze-close-btn" onClick={onClose}><X size={18} /></button>
         </div>
 
-        <div className="comp-modal-body">
+        <div className="comp-modal-body" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
           {/* Stats */}
           <div className="comp-stats">
             <div className="comp-stat-card">
-              <div className="comp-stat-value">{avgTemp}°C</div>
-              <div className="comp-stat-label">Avg High Temp</div>
+              <div className="comp-stat-value">{tref.toFixed(1)}°C</div>
+              <div className="comp-stat-label">TRef</div>
             </div>
             <div className="comp-stat-card peak">
-              <div className="comp-stat-value">{maxTemp}°C</div>
-              <div className="comp-stat-label">Peak Temp</div>
+              <div className="comp-stat-value">{avgDeltaValue}°C</div>
+              <div className="comp-stat-label">Avg ΔT</div>
             </div>
             <div className="comp-stat-card">
-              <div className="comp-stat-value">{minTemp}°C</div>
-              <div className="comp-stat-label">Lowest High</div>
+              <div className="comp-stat-value">{maxDelta.toFixed(1)}°C</div>
+              <div className="comp-stat-label">Peak ΔT</div>
             </div>
             <div className="comp-stat-card">
-              <div className="comp-stat-value">{avgAmbient}°C</div>
-              <div className="comp-stat-label">Avg Ambient</div>
+              <div className="comp-stat-value">{avgTemp}°C</div>
+              <div className="comp-stat-label">Avg Temp</div>
+            </div>
+          </div>
+
+          <div className={`comp-recommendation-callout ${overallRecommendation.tone}`}>
+            <div className="comp-recommendation-title">Recommended action</div>
+            <div className="comp-recommendation-text">{overallRecommendation.action}</div>
+            <div className="comp-recommendation-meta">
+              Highest ΔTref in this set: {maxDelta.toFixed(1)}°C
             </div>
           </div>
 
@@ -610,32 +799,93 @@ function ComparativeAnalysisModal({ scans, onClose }) {
             <span className="cls-chip normal"><CheckCircle2 size={12} /> {normal} Normal</span>
           </div>
 
-          {/* Bar chart */}
           <div className="comp-chart-section">
-            <h3>Temperature per Scan</h3>
-            <div className="comp-chart-area">
-              <div className="comp-chart">
-                {scans.map((scan, i) => {
-                  const temp = Number(scan.temperature);
-                  const amb = Number(scan.ambiance);
-                  const tempH = Math.round((temp / chartMax) * 160);
-                  const ambH = Math.round((amb / chartMax) * 160);
-                  return (
-                    <div key={i} className="chart-group">
-                      <div className="chart-bars-wrapper">
-                        <div className={`chart-bar high ${scan.classification?.toLowerCase()}`} style={{ height: tempH }} title={`${temp}°C`} />
-                        <div className="chart-bar ambient" style={{ height: ambH }} title={`${amb}°C`} />
+            <h3>Reference & Delta Charts</h3>
+            <div className="comp-chart-area comp-reference-chart">
+              <div className="comp-chart-label-row">
+                <span>Temperature vs reference</span>
+                <span>TRef = average of collected temperatures after outlier removal</span>
+              </div>
+              <div className="comp-chart-temp-wrap">
+                <div className="comp-reference-line" style={{ bottom: `${(tref / chartMax) * 100}%` }}>
+                  <span>TRef {tref.toFixed(1)}°C</span>
+                </div>
+                <div className="comp-chart">
+                  {scans.map((scan, index) => {
+                    const temp = Number(scan.temperature);
+                    const delta = Number(temp) - tref;
+                    const recommendation = getComparativeRecommendation(delta);
+                    const height = Number.isFinite(temp) ? Math.max((temp / chartMax) * 140, 4) : 4;
+                    return (
+                      <div key={scan.name ?? index} className="chart-group comp-chart-group">
+                        <div className={`chart-bar high ${recommendation.tone}`} style={{ height: `${height}px` }} title={`Temp ${temp.toFixed(1)}°C`} />
+                        <div className="chart-group-label">#{index + 1}</div>
+                        <div className="comp-delta-value">Δ {delta.toFixed(1)}°C</div>
                       </div>
-                      <span className="chart-group-label">#{i + 1}</span>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="chart-legend">
+                <span><span className="legend-dot high" />Temp</span>
+                <span><span className="legend-dot ref" />TRef</span>
+              </div>
+            </div>
+
+            <div className="comp-chart-area comp-delta-chart">
+              <div className="comp-chart-label-row">
+                <span>Temperature difference</span>
+                <span>ΔT = Temperature - TRef</span>
+              </div>
+              <div className="comp-delta-grid">
+                {scans.map((scan, index) => {
+                  const temp = Number(scan.temperature);
+                  const delta = Number(temp) - tref;
+                  const recommendation = getComparativeRecommendation(delta);
+                  const height = Math.max((Math.max(delta, 0) / deltaChartMax) * 110, 4);
+                  return (
+                    <div key={scan.name ?? index} className="comp-delta-item">
+                      <div className="comp-delta-track">
+                        <div className={`comp-delta-bar ${recommendation.tone}`} style={{ height: `${height}px` }} />
+                      </div>
+                      <div className="comp-delta-label">#{index + 1}</div>
+                      <div className="comp-delta-value">{delta.toFixed(1)}°C</div>
                     </div>
                   );
                 })}
               </div>
+              <div className="chart-legend">
+                <span><span className="legend-dot delta" />ΔT per component</span>
+              </div>
             </div>
-            <div className="chart-legend">
-              <span><span className="legend-dot high" /> High Temp</span>
-              <span><span className="legend-dot ambient" /> Ambient</span>
-            </div>
+          </div>
+
+          <div className="comp-table-section">
+            <h3>Scan Details</h3>
+            <table className="comp-details-table">
+              <thead>
+                <tr><th>#</th><th>Temp (°C)</th><th>TRef (°C)</th><th>ΔT (°C)</th><th>Recommended action</th><th>Captured</th></tr>
+              </thead>
+              <tbody>
+                {scans.map((scan, index) => {
+                  const temp = Number(scan.temperature);
+                  const delta = Number(temp) - tref;
+                  const recommendation = getComparativeRecommendation(delta);
+                  return (
+                    <tr key={scan.name ?? index}>
+                      <td>#{index + 1}</td>
+                      <td>{Number.isFinite(temp) ? temp.toFixed(1) : "-"}</td>
+                      <td>{tref.toFixed(1)}</td>
+                      <td>{delta.toFixed(1)}</td>
+                      <td>
+                        <span className={`scan-badge ${recommendation.tone}`}>{recommendation.label}</span>
+                      </td>
+                      <td>{scan.timestamp ?? '-'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
 
           {/* Image grid */}
@@ -645,6 +895,7 @@ function ComparativeAnalysisModal({ scans, onClose }) {
               {scans.map((scan, i) => (
                 <div key={i} className="comp-image-item" onClick={() => setFullscreenUrl(scan.url)}>
                   <img src={scan.url} alt={`Scan ${i + 1}`} />
+                  <span className="comp-image-num">#{i + 1}</span>
                   <div className="comp-image-footer">
                     <span className={`scan-badge ${scan.classification?.toLowerCase()}`}>{scan.classification}</span>
                     <span className="comp-image-temp">{scan.temperature}°C</span>
@@ -652,6 +903,16 @@ function ComparativeAnalysisModal({ scans, onClose }) {
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Recommendations for comparative analysis (interactive TODO) */}
+          <div className="comp-recs-section">
+            <h3>Recommendations</h3>
+            <p>Actions are selected from the comparative temperature-difference table: 1°C-3°C possible deficiency, 4°C-15°C probable deficiency, and above 15°C major discrepancy.</p>
+            <Checklist items={EC_TODO.slice(1)} storageKeyPrefix="comparative" idKey="comparative-overview" />
+            <p className="analysis-summary">
+              TRef: {tref.toFixed(1)}°C. Average ΔT: {avgDeltaValue}°C. Standard deviation: {stdDev}°C.
+            </p>
           </div>
         </div>
       </div>

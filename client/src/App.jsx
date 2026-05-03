@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera } from "lucide-react";
+import { AlertTriangle, BarChart2, Camera, CheckCircle2, X, Zap } from "lucide-react";
 import {
   createAnnotatedJpegFromSource,
   createRawJpegFromFile,
@@ -10,13 +10,21 @@ import Admin from "./Admin";
 
 const SHOOT_POLL_INTERVAL_MS = 2500;
 const API_BASE = "/api";
+const ANALYSIS_TODO = [
+  "EC 60364-6:2016",
+  "Tighten / Secure Connections",
+  "Inspect / Clean for Corrosion or Oxidation",
+  "Check for Signs of Arcing or Tracking",
+  "Verify Load / Current Balance",
+  "Ensure Proper Ventilation / Clean Dust or Debris"
+];
 
 export default function AppRouter() {
   const [isAdminAuth, setIsAdminAuth] = useState(() => !!localStorage.getItem("admin_token"));
 
   const [currentPage, setCurrentPage] = useState(() => {
     const path = window.location.pathname;
-    if (path.includes("/camera") && !!localStorage.getItem("admin_token")) return "camera";
+    if (path.includes("/test") && !!localStorage.getItem("admin_token")) return "test";
     if (path.includes("/admin")) return "admin";
     return "kiosk";
   });
@@ -24,7 +32,7 @@ export default function AppRouter() {
   useEffect(() => {
     const handlePopState = () => {
       const path = window.location.pathname;
-      if (path.includes("/camera") && isAdminAuth) setCurrentPage("camera");
+    if (path.includes("/test") && isAdminAuth) setCurrentPage("test");
       else if (path.includes("/admin")) setCurrentPage("admin");
       else setCurrentPage("kiosk");
     };
@@ -33,15 +41,15 @@ export default function AppRouter() {
   }, [isAdminAuth]);
 
   const navigateTo = (page) => {
-    if (page === "camera" && !isAdminAuth) page = "admin";
+    if (page === "test" && !isAdminAuth) page = "admin";
     setCurrentPage(page);
-    const paths = { camera: "/camera", kiosk: "/kiosk", admin: "/admin" };
+    const paths = { test: "/test", kiosk: "/kiosk", admin: "/admin" };
     window.history.pushState({}, "", paths[page] ?? "/kiosk");
   };
 
   const handleAuthChange = (authenticated) => {
     setIsAdminAuth(authenticated);
-    if (!authenticated && currentPage === "camera") {
+    if (!authenticated && currentPage === "test") {
       setCurrentPage("kiosk");
       window.history.pushState({}, "", "/kiosk");
     }
@@ -59,7 +67,7 @@ export default function AppRouter() {
   }
 
   // Camera — only when authenticated, shows slim top nav
-  if (currentPage === "camera" && isAdminAuth) {
+  if (currentPage === "test" && isAdminAuth) {
     return (
       <div className="app-wrapper">
         <CameraNav onNavigate={navigateTo} />
@@ -79,7 +87,7 @@ function CameraNav({ onNavigate }) {
       <div className="nav-brand">PortableThermal</div>
       <div className="nav-links">
         <button className="nav-link active">
-          <Camera size={15} /> Camera
+          <Camera size={15} /> Test
         </button>
         <button className="nav-link" onClick={() => onNavigate("kiosk")}>
           Kiosk
@@ -106,6 +114,10 @@ function CameraApp() {
   const [temperatureInput, setTemperatureInput] = useState("");
   const [ambianceInput, setAmbianceInput] = useState("");
   const [selectedPhoto, setSelectedPhoto] = useState(null);
+  const [selectedPhotoNames, setSelectedPhotoNames] = useState([]);
+  const [analysisPhotos, setAnalysisPhotos] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage] = useState(6);
   const activeShootRequestRef = useRef("");
   const completedShootRequestRef = useRef("");
 
@@ -122,6 +134,7 @@ function CameraApp() {
       const response = await fetch(`${API_BASE}/photos`);
       const data = await readJson(response);
       setPhotos(data.photos);
+      setSelectedPhotoNames((current) => current.filter((name) => data.photos.some((photo) => photo.name === name)));
       setStatus(data.photos.length ? "Gallery updated." : "No photos yet.");
     } catch (err) {
       setError(err.message);
@@ -267,6 +280,7 @@ function CameraApp() {
       const response = await fetch(`${API_BASE}/photos/${encodeURIComponent(photo.name)}`, { method: "DELETE" });
       await readJson(response);
       setPhotos((current) => current.filter((item) => item.name !== photo.name));
+      setSelectedPhotoNames((current) => current.filter((name) => name !== photo.name));
       setStatus("Photo deleted.");
     } catch (err) {
       setError(err.message);
@@ -275,6 +289,61 @@ function CameraApp() {
       setDeletingPhotoName("");
     }
   }
+
+  const clearAllPhotos = async () => {
+    if (!window.confirm(`Delete all ${photos.length} photos? This cannot be undone.`)) return;
+    setError("");
+    setStatus("Clearing all photos...");
+    try {
+      for (const photo of photos) {
+        await fetch(`${API_BASE}/photos/${encodeURIComponent(photo.name)}`, { method: "DELETE" });
+      }
+      setPhotos([]);
+      setSelectedPhotoNames([]);
+      setAnalysisPhotos(null);
+      setCurrentPage(1);
+      setStatus("All photos cleared.");
+    } catch (err) {
+      setError(err.message);
+      setStatus("Could not clear photos.");
+    }
+  };
+
+  const totalPages = Math.ceil(photos.length / itemsPerPage);
+  const startIdx = (currentPage - 1) * itemsPerPage;
+  const paginatedPhotos = photos.slice(startIdx, startIdx + itemsPerPage);
+  const selectedPhotos = photos.filter((photo) => selectedPhotoNames.includes(photo.name));
+
+  useEffect(() => {
+    if (totalPages > 0 && currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+    if (totalPages === 0 && currentPage !== 1) {
+      setCurrentPage(1);
+    }
+  }, [currentPage, totalPages]);
+
+  const togglePhotoSelection = useCallback((photo) => {
+    setSelectedPhotoNames((current) => (
+      current.includes(photo.name)
+        ? current.filter((name) => name !== photo.name)
+        : [...current, photo.name]
+    ));
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedPhotoNames([]);
+  }, []);
+
+  const openSelectedAnalysis = useCallback(() => {
+    if (selectedPhotos.length < 2) {
+      setError("Select at least two images to analyze.");
+      return;
+    }
+    setError("");
+    setStatus(`Analyzing ${selectedPhotos.length} selected photos...`);
+    setAnalysisPhotos(selectedPhotos);
+  }, [selectedPhotos]);
 
   return (
     <main className="app-shell">
@@ -321,39 +390,101 @@ function CameraApp() {
       <section className="gallery-panel" aria-labelledby="gallery-title">
         <div className="gallery-heading">
           <h2 id="gallery-title">Gallery</h2>
-          <span>{photos.length} {photos.length === 1 ? "photo" : "photos"}</span>
+            <div className="gallery-controls">
+              <span>{photos.length} {photos.length === 1 ? "photo" : "photos"}</span>
+              {selectedPhotos.length > 0 && (
+                <span className="gallery-selection-count">{selectedPhotos.length} selected</span>
+              )}
+              <button className="analyze-selected-btn" onClick={openSelectedAnalysis} type="button" disabled={selectedPhotos.length < 2}>
+                <BarChart2 size={16} />
+                Analyze Selected
+              </button>
+              {selectedPhotos.length > 0 && (
+                <button className="clear-selection-btn" onClick={clearSelection} type="button">
+                  Clear Selection
+                </button>
+              )}
+              {photos.length > 0 && (
+                <button className="clear-all-btn" onClick={clearAllPhotos} type="button">
+                  Clear All
+                </button>
+              )}
+            </div>
         </div>
         {!photos.length && <div className="empty-state">No photos yet.</div>}
-        <div className="gallery-grid">
-          {photos.map((photo) => (
-            <figure className="photo-card" key={photo.path}>
-              <button className="image-button" type="button" onClick={() => setSelectedPhoto(photo)}>
-                <img src={photo.url} alt="Captured" loading="lazy" />
-              </button>
-              <figcaption>
-                <span>
-                  <span>{formatDate(photo.createdAt)}</span>
-                  <small>{formatScale(photo)}</small>
-                </span>
-                <button className="delete-button" type="button" onClick={() => deletePhoto(photo)} disabled={deletingPhotoName === photo.name}>
-                  {deletingPhotoName === photo.name ? "Deleting..." : "Delete"}
+          <div className="gallery-grid-wrapper">
+            <div className="gallery-grid">
+              {paginatedPhotos.map((photo) => {
+                const isSelected = selectedPhotoNames.includes(photo.name);
+                return (
+                  <figure className={`photo-card ${isSelected ? "selected" : ""}`} key={photo.path}>
+                    <button
+                      className={`photo-select-toggle ${isSelected ? "selected" : ""}`}
+                      type="button"
+                      onClick={() => togglePhotoSelection(photo)}
+                      aria-pressed={isSelected}
+                      aria-label={`${isSelected ? "Deselect" : "Select"} photo`}
+                    >
+                      {isSelected ? "Selected" : "Select"}
+                    </button>
+                    <button className="image-button" type="button" onClick={() => setSelectedPhoto(photo)}>
+                      <img src={photo.url} alt="Captured" loading="lazy" />
+                    </button>
+                    <figcaption>
+                      <span>
+                        <span>{formatDate(photo.createdAt)}</span>
+                        <small>{formatScale(photo)}</small>
+                      </span>
+                      <button className="delete-button" type="button" onClick={() => deletePhoto(photo)} disabled={deletingPhotoName === photo.name}>
+                        {deletingPhotoName === photo.name ? "Deleting..." : "Delete"}
+                      </button>
+                    </figcaption>
+                  </figure>
+                );
+              })}
+            </div>
+            {totalPages > 1 && (
+              <div className="pagination">
+                <button 
+                  type="button"
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="pagination-btn"
+                >
+                  ← Previous
                 </button>
-              </figcaption>
-            </figure>
-          ))}
-        </div>
+                <span className="pagination-info">
+                  Page {currentPage} of {totalPages}
+                </span>
+                <button 
+                  type="button"
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="pagination-btn"
+                >
+                  Next →
+                </button>
+              </div>
+            )}
+          </div>
       </section>
 
       {selectedPhoto && (
         <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={() => setSelectedPhoto(null)}>
-          <div className="image-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="image-modal large-modal photo-preview-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-topbar">
               <span>{formatDate(selectedPhoto.createdAt)}<small>{formatScale(selectedPhoto)}</small></span>
               <button className="modal-close" type="button" onClick={() => setSelectedPhoto(null)}>Close</button>
             </div>
-            <img src={selectedPhoto.url} alt="Captured thermal" />
+            <div className="large-image-container">
+              <img src={selectedPhoto.url} alt="Captured thermal" />
+            </div>
           </div>
         </div>
+      )}
+
+      {analysisPhotos && analysisPhotos.length >= 2 && (
+        <PhotoAnalysisModal photos={analysisPhotos} onClose={() => setAnalysisPhotos(null)} />
       )}
     </main>
   );
@@ -421,6 +552,182 @@ function parseThermalScale(temperatureValue, ambianceValue) {
   if (!Number.isFinite(temperature) || !Number.isFinite(ambiance)) return { error: "Enter both temperature and ambiance numbers." };
   if (temperature <= ambiance) return { error: "Temperature must be higher than ambiance." };
   return { temperature, ambiance };
+}
+
+function classifyReading(temp, ambient) {
+  const temperature = Number(temp);
+  const ambiance = Number(ambient);
+  if (!Number.isFinite(temperature) || !Number.isFinite(ambiance)) return "Unknown";
+  const diff = temperature - ambiance;
+  const ratio = diff / ambiance;
+  if (ratio > 0.5 || diff > 50) return "Critical";
+  if (ratio > 0.25 || diff > 25) return "Warning";
+  return "Normal";
+}
+
+function Checklist({ items = [], storageKeyPrefix = "checklist", idKey = "default" }) {
+  const key = `${storageKeyPrefix}:${idKey}`;
+  const [checked, setChecked] = useState(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(checked));
+    } catch {
+      // Ignore storage errors in test mode.
+    }
+  }, [key, checked]);
+
+  const toggle = (index) => {
+    setChecked((current) => ({ ...current, [index]: !current[index] }));
+  };
+
+  return (
+    <div className="todo-checklist">
+      <ul>
+        {items.map((item, index) => (
+          <li key={index} className={`todo-item ${checked[index] ? "done" : ""}`}>
+            <label>
+              <input type="checkbox" checked={!!checked[index]} onChange={() => toggle(index)} />
+              <span className="todo-label">{item}</span>
+            </label>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function PhotoAnalysisModal({ photos, onClose }) {
+  const temps = photos.map((photo) => Number(photo.temperature));
+  const ambients = photos.map((photo) => Number(photo.ambiance));
+  const diffs = photos.map((photo) => Number(photo.temperature) - Number(photo.ambiance));
+  const avgTemp = (temps.reduce((sum, value) => sum + value, 0) / temps.length).toFixed(1);
+  const maxTemp = Math.max(...temps).toFixed(1);
+  const minTemp = Math.min(...temps).toFixed(1);
+  const avgAmbient = (ambients.reduce((sum, value) => sum + value, 0) / ambients.length).toFixed(1);
+  const avgDiffValue = diffs.reduce((sum, value) => sum + value, 0) / diffs.length;
+  const avgDiff = avgDiffValue.toFixed(1);
+  const variance = diffs.reduce((sum, value) => sum + Math.pow(value - avgDiffValue, 2), 0) / diffs.length;
+  const stdDev = Math.sqrt(variance).toFixed(1);
+
+  const critical = photos.filter((photo) => classifyReading(photo.temperature, photo.ambiance) === "Critical").length;
+  const warning = photos.filter((photo) => classifyReading(photo.temperature, photo.ambiance) === "Warning").length;
+  const normal = photos.filter((photo) => classifyReading(photo.temperature, photo.ambiance) === "Normal").length;
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="comp-analysis-modal test-analysis-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="comp-modal-header">
+          <h2>Selected Image Analysis</h2>
+          <button className="analyze-close-btn" onClick={onClose} type="button" aria-label="Close analysis modal">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="comp-modal-body">
+          <div className="comp-stats">
+            <div className="comp-stat-card">
+              <div className="comp-stat-value">{avgTemp}°C</div>
+              <div className="comp-stat-label">Avg High Temp</div>
+            </div>
+            <div className="comp-stat-card peak">
+              <div className="comp-stat-value">{maxTemp}°C</div>
+              <div className="comp-stat-label">Peak Temp</div>
+            </div>
+            <div className="comp-stat-card">
+              <div className="comp-stat-value">{minTemp}°C</div>
+              <div className="comp-stat-label">Lowest High</div>
+            </div>
+            <div className="comp-stat-card">
+              <div className="comp-stat-value">{avgAmbient}°C</div>
+              <div className="comp-stat-label">Avg Ambient</div>
+            </div>
+          </div>
+
+          <div className="comp-classification-row">
+            <span className="cls-chip critical"><Zap size={12} /> {critical} Critical</span>
+            <span className="cls-chip warning"><AlertTriangle size={12} /> {warning} Warning</span>
+            <span className="cls-chip normal"><CheckCircle2 size={12} /> {normal} Normal</span>
+          </div>
+
+          <div className="comp-table-section">
+            <h3>Scan Details</h3>
+            <table className="comp-details-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Temp (°C)</th>
+                  <th>Ambient (°C)</th>
+                  <th>Δ (°C)</th>
+                  <th>Class</th>
+                  <th>Captured</th>
+                </tr>
+              </thead>
+              <tbody>
+                {photos.map((photo, index) => {
+                  const classification = classifyReading(photo.temperature, photo.ambiance);
+                  const diff = Number(photo.temperature) - Number(photo.ambiance);
+                  return (
+                    <tr key={photo.name ?? index}>
+                      <td>#{index + 1}</td>
+                      <td>{formatNumber(photo.temperature)}</td>
+                      <td>{formatNumber(photo.ambiance)}</td>
+                      <td>{diff.toFixed(1)}</td>
+                      <td><span className={`scan-badge ${classification.toLowerCase()}`}>{classification}</span></td>
+                      <td>{formatDate(photo.createdAt)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="comp-images-section">
+            <h3>Captured Images ({photos.length})</h3>
+            <div className="comp-image-grid">
+              {photos.map((photo, index) => {
+                const classification = classifyReading(photo.temperature, photo.ambiance);
+                return (
+                  <div className="comp-image-item" key={photo.name ?? index}>
+                    <img src={photo.url} alt={`Selected scan ${index + 1}`} />
+                    <span className="comp-image-num">#{index + 1}</span>
+                    <div className="comp-image-footer">
+                      <span className={`scan-badge ${classification.toLowerCase()}`}>{classification}</span>
+                      <span className="comp-image-temp">{formatNumber(photo.temperature)}°C</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="comp-recs-section">
+            <h3>Recommendations</h3>
+            <p>The following checklist is based on EC 60364-6:2016 and can be marked as items are inspected.</p>
+            <Checklist items={ANALYSIS_TODO.slice(1)} storageKeyPrefix="test-analysis" idKey={photos.map((photo) => photo.name).join("|")} />
+            <p className="analysis-summary">
+              Average temperature delta: {avgDiff}°C. Standard deviation: {stdDev}°C.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function UploadIcon() {

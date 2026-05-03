@@ -5,6 +5,7 @@ const adminRoutes = require("./admin.routes");
 const cameraRoutes = require("./camera.routes");
 const healthRoutes = require("./health.routes");
 const photoRoutes = require("./photos.routes");
+const scanSessionRoutes = require("./scanSessions.routes");
 const sensorRoutes = require("./sensors.routes");
 const testRoutes = require("./test.routes");
 
@@ -14,6 +15,7 @@ router.use("/admin", adminRoutes);
 router.use("/camera", cameraRoutes);
 router.use("/health", healthRoutes);
 router.use("/photos", photoRoutes);
+router.use("/scan-sessions", scanSessionRoutes);
 router.use("/sensors", sensorRoutes);
 router.use("/test", testRoutes);
 

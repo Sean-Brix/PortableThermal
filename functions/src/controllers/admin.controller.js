@@ -48,6 +48,8 @@ async function updateSystemSettings(req, res, next) {
 async function getScanLogs(req, res, next) {
   try {
     const filters = {
+      mode: req.query.mode,
+      source: req.query.source,
       equipment: req.query.equipment,
       location: req.query.location,
       classification: req.query.classification,
@@ -58,6 +60,23 @@ async function getScanLogs(req, res, next) {
     const logs = await scanService.getScanLogs(filters);
     res.set("Cache-Control", "no-store");
     res.json({ logs, count: logs.length });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function getComparativeSessions(req, res, next) {
+  try {
+    const filters = {
+      source: req.query.source,
+      status: req.query.status,
+      startDate: req.query.startDate,
+      endDate: req.query.endDate
+    };
+
+    const sessions = await scanService.getScanSessions(filters);
+    res.set("Cache-Control", "no-store");
+    res.json({ sessions, count: sessions.length });
   } catch (error) {
     next(error);
   }
@@ -112,6 +131,7 @@ async function generateThermalReport(req, res, next) {
 module.exports = {
   adminLogin,
   generateThermalReport,
+  getComparativeSessions,
   getScanLogs,
   getSystemSettings,
   updateSystemSettings

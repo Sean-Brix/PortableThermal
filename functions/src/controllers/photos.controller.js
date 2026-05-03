@@ -21,22 +21,71 @@ async function createPhoto(req, res, next) {
       ambiance: req.body?.ambiance
     });
 
-    // Log the scan
+    const source = req.body?.source;
+    const mode = req.body?.mode;
+    const shouldLogKioskScan = source === "kiosk" && (mode === "single" || mode === "comparative");
+    let responsePhoto = photo;
+
     try {
-      await scanService.createScanLog({
-        mode: "single",
-        temperature: photo.temperature,
-        ambiance: photo.ambiance,
-        photoPath: photo.path,
-        equipment: req.body?.equipment || "Unknown",
-        location: req.body?.location || "Unknown",
-        hotspotCount: 0
-      });
+      const settings = shouldLogKioskScan
+        ? await scanService.getSystemSettings()
+        : null;
+      const loggingEnabled = settings?.enableLogs !== false;
+
+      if (shouldLogKioskScan && loggingEnabled && mode === "single") {
+        const log = await scanService.createScanLog({
+          mode: "single",
+          source: "kiosk",
+          temperature: photo.temperature,
+          ambiance: photo.ambiance,
+          photoPath: photo.path,
+          equipment: req.body?.equipment || "Unknown",
+          location: req.body?.location || "Unknown",
+          hotspotCount: 0
+        });
+        responsePhoto = {
+          ...photo,
+          scanLogId: log.id,
+          classification: log.classification,
+          loggedAt: log.timestamp
+        };
+      } else if (shouldLogKioskScan && loggingEnabled && mode === "comparative") {
+        let sessionId = req.body?.sessionId;
+        if (!sessionId) {
+          const session = await scanService.createScanSession({
+            source: "kiosk",
+            equipment: req.body?.equipment || "Unknown",
+            location: req.body?.location || "Unknown",
+            notes: req.body?.notes || ""
+          });
+          sessionId = session.id;
+        }
+
+        const log = await scanService.createScanLog({
+          mode: "comparative",
+          source: "kiosk",
+          temperature: photo.temperature,
+          ambiance: photo.ambiance,
+          photoPath: photo.path,
+          sessionId,
+          equipment: req.body?.equipment || "Unknown",
+          location: req.body?.location || "Unknown",
+          hotspotCount: 0
+        });
+        await scanService.addScanToSession(sessionId, log.id);
+        responsePhoto = {
+          ...photo,
+          scanLogId: log.id,
+          sessionId,
+          classification: log.classification,
+          loggedAt: log.timestamp
+        };
+      }
     } catch (_err) {
-      // Logging error shouldn't fail the photo save
+      // Logging error shouldn't fail the photo save.
     }
 
-    res.status(201).json(photo);
+    res.status(201).json(responsePhoto);
   } catch (error) {
     next(error);
   }
