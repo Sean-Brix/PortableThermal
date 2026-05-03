@@ -7,9 +7,9 @@ import {
 } from "./thermalOverlay";
 import Kiosk from "./Kiosk";
 import Admin from "./Admin";
+import { getApiBase, resolveApiBase, drainPhotoQueue } from "./api.js";
 
 const SHOOT_POLL_INTERVAL_MS = 2500;
-const API_BASE = "/api";
 const ANALYSIS_TODO = [
   "EC 60364-6:2016",
   "Tighten / Secure Connections",
@@ -131,7 +131,7 @@ function CameraApp() {
     setRefreshing(true);
     setError("");
     try {
-      const response = await fetch(`${API_BASE}/photos`);
+      const response = await fetch(`${getApiBase()}/photos`);
       const data = await readJson(response);
       setPhotos(data.photos);
       setSelectedPhotoNames((current) => current.filter((name) => data.photos.some((photo) => photo.name === name)));
@@ -175,6 +175,13 @@ function CameraApp() {
   }, [loadGallery, startCamera, stopCamera]);
 
   useEffect(() => {
+    resolveApiBase().then(() => drainPhotoQueue());
+    const handleOnline = async () => { await resolveApiBase(); drainPhotoQueue(); };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, []);
+
+  useEffect(() => {
     function closeOnEscape(e) { if (e.key === "Escape") setSelectedPhoto(null); }
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
@@ -187,14 +194,14 @@ function CameraApp() {
     async function pollShootRequests() {
       if (cancelled || isSaving || !videoRef.current?.videoWidth) return;
       try {
-        const response = await fetch(`${API_BASE}/camera/shoot`, { cache: "no-store" });
+        const response = await fetch(`${getApiBase()}/camera/shoot`, { cache: "no-store" });
         if (response.status === 204) return;
         const request = await readJson(response);
         if (!request?.id || request.id === activeShootRequestRef.current || request.id === completedShootRequestRef.current) return;
         activeShootRequestRef.current = request.id;
         try {
           await captureAndSavePhoto({ temperature: request.temp, ambiance: request.ambient });
-          await fetch(`${API_BASE}/camera/shoot/complete`, {
+          await fetch(`${getApiBase()}/camera/shoot/complete`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ requestId: request.id })
@@ -261,7 +268,7 @@ function CameraApp() {
   async function saveAutoAnnotatedPhoto(rawImage, scale) {
     const imageData = await createAnnotatedJpegFromSource(rawImage.src, scale);
     setStatus("Saving photo...");
-    const response = await fetch(`${API_BASE}/photos`, {
+    const response = await fetch(`${getApiBase()}/photos`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ imageData, temperature: scale.temperature, ambiance: scale.ambiance })
@@ -277,7 +284,7 @@ function CameraApp() {
     setError("");
     setStatus("Deleting photo...");
     try {
-      const response = await fetch(`${API_BASE}/photos/${encodeURIComponent(photo.name)}`, { method: "DELETE" });
+      const response = await fetch(`${getApiBase()}/photos/${encodeURIComponent(photo.name)}`, { method: "DELETE" });
       await readJson(response);
       setPhotos((current) => current.filter((item) => item.name !== photo.name));
       setSelectedPhotoNames((current) => current.filter((name) => name !== photo.name));
@@ -296,7 +303,7 @@ function CameraApp() {
     setStatus("Clearing all photos...");
     try {
       for (const photo of photos) {
-        await fetch(`${API_BASE}/photos/${encodeURIComponent(photo.name)}`, { method: "DELETE" });
+        await fetch(`${getApiBase()}/photos/${encodeURIComponent(photo.name)}`, { method: "DELETE" });
       }
       setPhotos([]);
       setSelectedPhotoNames([]);
@@ -539,7 +546,7 @@ function getManualThermalScale(temperatureValue, ambianceValue) {
 }
 
 async function fetchSensorScale() {
-  const response = await fetch(`${API_BASE}/sensors/latest`, { cache: "no-store" });
+  const response = await fetch(`${getApiBase()}/sensors/latest`, { cache: "no-store" });
   const reading = await readJson(response);
   const scale = parseThermalScale(reading.temperature, reading.ambiance ?? reading.ambient);
   if (scale.error) throw new Error(`Sensor reading is invalid. ${scale.error}`);

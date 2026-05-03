@@ -1493,6 +1493,7 @@ video {
 /* Login Page */
 .login-page {
   display: flex;
+  flex: 1;
   align-items: center;
   justify-content: center;
   min-height: 100vh;
@@ -2854,6 +2855,32 @@ video {
 }
 
 .setting-number-input:focus {
+  outline: 2px solid #2d8cff;
+  outline-offset: -2px;
+}
+
+.setting-password-item {
+  align-items: flex-start;
+}
+
+.setting-password-fields {
+  display: grid;
+  gap: 10px;
+  min-width: min(340px, 100%);
+}
+
+.setting-password-input {
+  background: #050607;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #f7f3ea;
+  padding: 8px 12px;
+  border-radius: 6px;
+  width: 100%;
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.setting-password-input:focus {
   outline: 2px solid #2d8cff;
   outline-offset: -2px;
 }

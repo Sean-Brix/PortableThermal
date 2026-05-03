@@ -12,8 +12,7 @@ import {
   Settings
 } from "lucide-react";
 import { createAnnotatedJpegFromSource, createRawJpegFromVideo } from "./thermalOverlay";
-
-const API_BASE = "/api";
+import { getApiBase, resolveApiBase, enqueue, drainPhotoQueue } from "./api.js";
 const SHOOT_POLL_MS = 2500;
 const HOLD_DURATION_MS = 1500;
 
@@ -206,6 +205,13 @@ export default function Kiosk({ onAdminRequest }) {
 
   useEffect(() => { startCamera(); return () => stopCamera(); }, [startCamera, stopCamera]);
 
+  useEffect(() => {
+    resolveApiBase().then(() => drainPhotoQueue());
+    const handleOnline = async () => { await resolveApiBase(); drainPhotoQueue(); };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, []);
+
   // Re-attach stream when scan-page video mounts
   const videoCallbackRef = useCallback((el) => {
     videoRef.current = el;
@@ -223,7 +229,7 @@ export default function Kiosk({ onAdminRequest }) {
       let scale = overrideScale;
       if (!scale) {
         setStatus("Reading sensor...");
-        const res = await fetch(`${API_BASE}/sensors/latest`, { cache: "no-store" });
+        const res = await fetch(`${getApiBase()}/sensors/latest`, { cache: "no-store" });
         if (!res.ok) throw new Error("Sensor unavailable. Use the shoot API to provide temperature values.");
         const data = await res.json();
         scale = { temperature: Number(data.temperature), ambiance: Number(data.ambiance ?? data.ambient) };
@@ -234,23 +240,40 @@ export default function Kiosk({ onAdminRequest }) {
       const rawImage = createRawJpegFromVideo(videoRef.current);
       const imageData = await createAnnotatedJpegFromSource(rawImage.src, scale);
       setStatus("Saving...");
-      const res = await fetch(`${API_BASE}/photos`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageData,
-          temperature: scale.temperature,
-          ambiance: scale.ambiance,
-          ...logContext
-        })
-      });
-      if (!res.ok) throw new Error("Failed to save photo.");
-      const photo = await res.json();
-      setStatus("Captured!");
-      const capturedAt = photo.loggedAt || photo.createdAt || new Date().toISOString();
+      let photo = null;
+      let savedOffline = false;
+      try {
+        const res = await fetch(`${getApiBase()}/photos`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            imageData,
+            temperature: scale.temperature,
+            ambiance: scale.ambiance,
+            ...logContext
+          })
+        });
+        if (!res.ok) throw new Error("Failed to save photo.");
+        photo = await res.json();
+      } catch (saveErr) {
+        // Re-throw server-side errors (res not ok); only queue on network failure (TypeError)
+        if (!(saveErr instanceof TypeError)) throw saveErr;
+        try {
+          enqueue({ imageData, temperature: scale.temperature, ambiance: scale.ambiance, ...logContext });
+          savedOffline = true;
+        } catch {
+          throw new Error("Offline queue full — connect to sync.");
+        }
+      }
+      setStatus(savedOffline ? "Saved offline. Will sync when connected." : "Captured!");
+      const capturedAt = photo?.loggedAt || photo?.createdAt || new Date().toISOString();
       return {
-        ...photo,
-        classification: photo.classification || classifyReading(scale.temperature, scale.ambiance),
+        ...(photo || {}),
+        id: photo?.id || `offline-${Date.now()}`,
+        url: photo?.url || imageData,
+        classification: photo?.classification || classifyReading(scale.temperature, scale.ambiance),
+        temperature: scale.temperature,
+        ambiance: scale.ambiance,
         timestamp: new Date(capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
       };
     } catch (err) {
@@ -286,7 +309,7 @@ export default function Kiosk({ onAdminRequest }) {
     if (!sessionId || comparativeScans.length < 2) return null;
 
     try {
-      const response = await fetch(`${API_BASE}/scan-sessions/${sessionId}/complete`, {
+      const response = await fetch(`${getApiBase()}/scan-sessions/${sessionId}/complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ analysis: buildComparativeAnalysisSummary(comparativeScans) })
@@ -312,7 +335,7 @@ export default function Kiosk({ onAdminRequest }) {
       const ctx = pollCtxRef.current;
       if (cancelled || ctx.isSaving || !videoRef.current?.videoWidth) return;
       try {
-        const res = await fetch(`${API_BASE}/camera/shoot`, { cache: "no-store" });
+        const res = await fetch(`${getApiBase()}/camera/shoot`, { cache: "no-store" });
         if (res.status === 204) return;
         const request = await res.json();
         if (!request?.id || request.id === sr.activeId || request.id === sr.completedId) return;
@@ -321,7 +344,7 @@ export default function Kiosk({ onAdminRequest }) {
           const scale = { temperature: Number(request.temp), ambiance: Number(request.ambient ?? request.ambiance) };
           if (ctx.page === "singleScan") await ctx.captureSingleScan(scale);
           else await ctx.addComparativeScan(scale);
-          await fetch(`${API_BASE}/camera/shoot/complete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestId: request.id }) });
+          await fetch(`${getApiBase()}/camera/shoot/complete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestId: request.id }) });
           sr.completedId = request.id;
         } finally { sr.activeId = ""; }
       } catch { /* silent */ }

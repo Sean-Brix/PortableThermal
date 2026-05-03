@@ -1,0 +1,12 @@
+{
+  "name": "portable-thermal-localserver",
+  "version": "1.0.0",
+  "description": "Local RasPi API middleman for PortableThermal — no database, in-memory only",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

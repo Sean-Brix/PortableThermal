@@ -7,6 +7,13 @@ const { makeDownloadUrl } = require("../utils/downloadUrl");
 
 const SCAN_LOGS_PREFIX = "scan-logs";
 const SCAN_SESSIONS_PREFIX = "scan-sessions";
+const DEFAULT_SYSTEM_SETTINGS = {
+  enableLogs: true,
+  showThermalMarkings: true,
+  enableAdminMode: true,
+  adminPassword: "admin123",
+  maxComparativeScans: 20
+};
 
 async function createScanLog(payload) {
   const scanId = randomUUID();
@@ -466,34 +473,44 @@ async function getSystemSettings() {
   
   const [exists] = await file.exists();
   if (!exists) {
-    const defaults = {
-      enableLogs: true,
-      showThermalMarkings: true,
-      enableAdminMode: true,
-      adminPassword: "admin123", // Should be hashed in production
-      maxComparativeScans: 20
-    };
-    await file.save(Buffer.from(JSON.stringify(defaults)), {
+    await file.save(Buffer.from(JSON.stringify(DEFAULT_SYSTEM_SETTINGS)), {
       contentType: "application/json",
       resumable: false
     });
-    return defaults;
+    return { ...DEFAULT_SYSTEM_SETTINGS };
   }
 
   const [buffer] = await file.download();
-  return JSON.parse(buffer.toString("utf8"));
+  return { ...DEFAULT_SYSTEM_SETTINGS, ...JSON.parse(buffer.toString("utf8")) };
 }
 
 async function updateSystemSettings(settings) {
   const fileName = "system-config/settings.json";
   const file = getStorage().bucket().file(fileName);
+
+  const currentSettings = await getSystemSettings();
+  const nextSettings = {
+    ...currentSettings,
+    ...settings
+  };
+
+  if (typeof settings?.adminPassword === "string" && settings.adminPassword.trim()) {
+    nextSettings.adminPassword = settings.adminPassword.trim();
+  } else {
+    nextSettings.adminPassword = currentSettings.adminPassword;
+  }
   
-  await file.save(Buffer.from(JSON.stringify(settings)), {
+  await file.save(Buffer.from(JSON.stringify(nextSettings)), {
     contentType: "application/json",
     resumable: false
   });
 
-  return settings;
+  return nextSettings;
+}
+
+function sanitizeSystemSettings(settings) {
+  const { adminPassword, ...safeSettings } = settings || {};
+  return safeSettings;
 }
 
 module.exports = {
@@ -506,5 +523,6 @@ module.exports = {
   getScanSession,
   getScanSessions,
   getSystemSettings,
+  sanitizeSystemSettings,
   updateSystemSettings
 };

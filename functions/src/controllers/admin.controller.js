@@ -1,25 +1,31 @@
 "use strict";
 
+const crypto = require("crypto");
 const scanService = require("../services/scan.service");
 const { HttpError } = require("../utils/httpError");
 
 async function adminLogin(req, res, next) {
   try {
-    const password = req.body?.password;
-    if (!password) {
-      throw new HttpError(400, "Password is required.");
+    const { username, password } = req.body || {};
+    if (!username || !password) {
+      throw new HttpError(400, "Username and password are required.");
     }
 
     const settings = await scanService.getSystemSettings();
-    
-    if (password !== settings.adminPassword) {
-      throw new HttpError(401, "Invalid password.");
+
+    if (settings.enableAdminMode === false) {
+      throw new HttpError(403, "Admin mode is disabled.");
+    }
+
+    if (username !== "admin" || password !== settings.adminPassword) {
+      throw new HttpError(401, "Invalid username or password.");
     }
 
     // In production, issue a JWT token here
+    const token = signAdminToken(settings.adminPassword);
     res.json({
       authenticated: true,
-      token: Buffer.from(JSON.stringify({ admin: true, timestamp: Date.now() })).toString("base64"),
+      token,
       message: "Admin authenticated"
     });
   } catch (error) {
@@ -29,8 +35,8 @@ async function adminLogin(req, res, next) {
 
 async function getSystemSettings(req, res, next) {
   try {
-    const settings = await scanService.getSystemSettings();
-    res.json(settings);
+    const settings = await requireAdminSession(req);
+    res.json(scanService.sanitizeSystemSettings(settings));
   } catch (error) {
     next(error);
   }
@@ -38,8 +44,9 @@ async function getSystemSettings(req, res, next) {
 
 async function updateSystemSettings(req, res, next) {
   try {
+    await requireAdminSession(req);
     const settings = await scanService.updateSystemSettings(req.body);
-    res.json(settings);
+    res.json(scanService.sanitizeSystemSettings(settings));
   } catch (error) {
     next(error);
   }
@@ -47,6 +54,7 @@ async function updateSystemSettings(req, res, next) {
 
 async function getScanLogs(req, res, next) {
   try {
+    await requireAdminSession(req);
     const filters = {
       mode: req.query.mode,
       source: req.query.source,
@@ -67,6 +75,7 @@ async function getScanLogs(req, res, next) {
 
 async function getComparativeSessions(req, res, next) {
   try {
+    await requireAdminSession(req);
     const filters = {
       source: req.query.source,
       status: req.query.status,
@@ -84,6 +93,7 @@ async function getComparativeSessions(req, res, next) {
 
 async function generateThermalReport(req, res, next) {
   try {
+    await requireAdminSession(req);
     const scanId = req.params.scanId;
     if (!scanId) {
       throw new HttpError(400, "Scan ID is required.");
@@ -126,6 +136,34 @@ async function generateThermalReport(req, res, next) {
   } catch (error) {
     next(error);
   }
+}
+
+function signAdminToken(adminPassword) {
+  const payload = Buffer.from(JSON.stringify({ admin: true, timestamp: Date.now() })).toString("base64url");
+  const signature = crypto.createHmac("sha256", adminPassword).update(payload).digest("base64url");
+  return `${payload}.${signature}`;
+}
+
+function verifyAdminToken(token, adminPassword) {
+  if (!token || !adminPassword) return false;
+
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) return false;
+
+  const expectedSignature = crypto.createHmac("sha256", adminPassword).update(payload).digest("base64url");
+  return signature === expectedSignature;
+}
+
+async function requireAdminSession(req) {
+  const settings = await scanService.getSystemSettings();
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+
+  if (!verifyAdminToken(token, settings.adminPassword)) {
+    throw new HttpError(401, "Admin session required.");
+  }
+
+  return settings;
 }
 
 module.exports = {
