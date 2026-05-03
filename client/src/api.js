@@ -1,58 +1,47 @@
-// Connectivity utility — switches API base between Firebase cloud and local RasPi server.
-// Photo queue — stores offline captures in localStorage and syncs to cloud on reconnect.
+// Connectivity utility — local-first architecture.
+//
+// The kiosk ALWAYS talks to the local server (localhost:3000 by default).
+// Photos are synced to the cloud in the background whenever internet is available.
+// No mode switching — local server is always the source of truth.
 
 const CLOUD_BASE = "/api";
 const LOCAL_SERVER_KEY = "local_server_url";
-const HEALTH_TIMEOUT_MS = 3000;
+const DEFAULT_LOCAL_URL = "http://localhost:3000";
 const QUEUE_KEY = "offline_photo_queue";
 
-// Module-level variable updated by resolveApiBase(). Read with getApiBase().
-let apiBase = CLOUD_BASE;
-
-// ─── API base resolution ──────────────────────────────────────────────────────
-
-export function getApiBase() {
-  return apiBase;
-}
+// ─── Local server base ────────────────────────────────────────────────────────
 
 export function getLocalServerUrl() {
   return localStorage.getItem(LOCAL_SERVER_KEY) || "";
 }
 
-export async function resolveApiBase() {
-  const isCloudUp = await checkCloudHealth();
-  if (isCloudUp) {
-    apiBase = CLOUD_BASE;
-  } else {
-    const localUrl = getLocalServerUrl();
-    if (localUrl) {
-      // Strip any trailing /api the user may have included, then append /api
-      apiBase = localUrl.replace(/\/api\/?$/, "").replace(/\/$/, "") + "/api";
-    } else {
-      apiBase = CLOUD_BASE; // no local server configured — best effort
-    }
-  }
-  return apiBase;
+// Always returns the local server API base. Used by all kiosk API calls.
+// Sanitizes 0.0.0.0 → localhost (0.0.0.0 is a server bind address, not a valid browser URL).
+export function getApiBase() {
+  const url = (getLocalServerUrl() || DEFAULT_LOCAL_URL).replace("0.0.0.0", "localhost");
+  return url.replace(/\/api\/?$/, "").replace(/\/$/, "") + "/api";
 }
 
-async function checkCloudHealth() {
+// ─── Cloud photo sync ─────────────────────────────────────────────────────────
+// Tries to save a photo to cloud. Queues it if cloud is unreachable.
+// Call this fire-and-forget after saving to the local server.
+
+export async function syncPhotoToCloud(payload) {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-    const res = await fetch(`${CLOUD_BASE}/health`, {
-      cache: "no-store",
-      signal: controller.signal
+    const res = await fetch(`${CLOUD_BASE}/photos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
     });
-    clearTimeout(timeout);
-    return res.ok;
+    if (res.ok) return;
   } catch {
-    return false;
+    // Cloud unreachable — fall through to queue
   }
+  try { enqueue(payload); } catch {}
 }
 
 // ─── Offline photo queue ──────────────────────────────────────────────────────
-// Photos are stored as base64 data URLs in localStorage while offline.
-// drainPhotoQueue() syncs them to the cloud (always /api, not local server).
+// Stores photos that couldn't reach the cloud. Drained on reconnect.
 
 export function readQueue() {
   try {
@@ -70,7 +59,6 @@ export function enqueue(payload) {
     ...payload
   };
   queue.push(entry);
-  // May throw QuotaExceededError — caller should catch and surface it
   localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
   return entry;
 }
@@ -80,8 +68,6 @@ export function dequeue(id) {
   localStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
 }
 
-// Drains the offline queue to the cloud. Always uses CLOUD_BASE (/api), not
-// the local server, since the queue is meant to sync to Firebase on reconnect.
 export async function drainPhotoQueue(onProgress) {
   const queue = readQueue();
   if (queue.length === 0) return;
@@ -99,8 +85,7 @@ export async function drainPhotoQueue(onProgress) {
         onProgress?.({ remaining: readQueue().length });
       }
     } catch {
-      // Network still down — stop draining, try again on next online event
-      break;
+      break; // Network still down — retry on next online event
     }
   }
 }

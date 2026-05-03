@@ -12,7 +12,7 @@ import {
   Settings
 } from "lucide-react";
 import { createAnnotatedJpegFromSource, createRawJpegFromVideo } from "./thermalOverlay";
-import { getApiBase, resolveApiBase, enqueue, drainPhotoQueue } from "./api.js";
+import { getApiBase, syncPhotoToCloud, enqueue, drainPhotoQueue } from "./api.js";
 const SHOOT_POLL_MS = 2500;
 const HOLD_DURATION_MS = 1500;
 
@@ -206,8 +206,8 @@ export default function Kiosk({ onAdminRequest }) {
   useEffect(() => { startCamera(); return () => stopCamera(); }, [startCamera, stopCamera]);
 
   useEffect(() => {
-    resolveApiBase().then(() => drainPhotoQueue());
-    const handleOnline = async () => { await resolveApiBase(); drainPhotoQueue(); };
+    drainPhotoQueue();
+    const handleOnline = () => drainPhotoQueue();
     window.addEventListener("online", handleOnline);
     return () => window.removeEventListener("online", handleOnline);
   }, []);
@@ -222,7 +222,6 @@ export default function Kiosk({ onAdminRequest }) {
   }, []);
 
   const captureAndSave = useCallback(async (overrideScale = null, logContext = {}) => {
-    if (!videoRef.current?.videoWidth) { setError("Camera not ready."); return null; }
     setSaving(true);
     setError("");
     try {
@@ -240,38 +239,23 @@ export default function Kiosk({ onAdminRequest }) {
       const rawImage = createRawJpegFromVideo(videoRef.current);
       const imageData = await createAnnotatedJpegFromSource(rawImage.src, scale);
       setStatus("Saving...");
+      const cloudPayload = { imageData, temperature: scale.temperature, ambiance: scale.ambiance, ...logContext };
       let photo = null;
-      let savedOffline = false;
-      try {
-        const res = await fetch(`${getApiBase()}/photos`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            imageData,
-            temperature: scale.temperature,
-            ambiance: scale.ambiance,
-            ...logContext
-          })
-        });
-        if (!res.ok) throw new Error("Failed to save photo.");
-        photo = await res.json();
-      } catch (saveErr) {
-        // Re-throw server-side errors (res not ok); only queue on network failure (TypeError)
-        if (!(saveErr instanceof TypeError)) throw saveErr;
-        try {
-          enqueue({ imageData, temperature: scale.temperature, ambiance: scale.ambiance, ...logContext });
-          savedOffline = true;
-        } catch {
-          throw new Error("Offline queue full — connect to sync.");
-        }
-      }
-      setStatus(savedOffline ? "Saved offline. Will sync when connected." : "Captured!");
-      const capturedAt = photo?.loggedAt || photo?.createdAt || new Date().toISOString();
+      // Save to local server — always immediate, no waiting for internet
+      const res = await fetch(`${getApiBase()}/photos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cloudPayload)
+      });
+      if (!res.ok) throw new Error("Failed to save photo to local server.");
+      photo = await res.json();
+      // Background sync to cloud — non-blocking, queues if offline
+      syncPhotoToCloud(cloudPayload);
+      setStatus("Captured!");
+      const capturedAt = photo.loggedAt || photo.createdAt || new Date().toISOString();
       return {
-        ...(photo || {}),
-        id: photo?.id || `offline-${Date.now()}`,
-        url: photo?.url || imageData,
-        classification: photo?.classification || classifyReading(scale.temperature, scale.ambiance),
+        ...photo,
+        classification: photo.classification || classifyReading(scale.temperature, scale.ambiance),
         temperature: scale.temperature,
         ambiance: scale.ambiance,
         timestamp: new Date(capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -324,16 +308,18 @@ export default function Kiosk({ onAdminRequest }) {
 
   pollCtxRef.current = { page, isSaving, captureSingleScan, addComparativeScan };
 
-  // Shoot-request polling on scan pages
+  // Shoot-request polling on scan pages.
+  // Polling starts as soon as the user is on a scan page — does NOT wait for
+  // camera readiness. Camera is only checked at the moment of capture so that
+  // shoot requests are visible in the network tab even before the camera feeds.
   useEffect(() => {
     if (page !== "singleScan" && page !== "comparative") return;
-    if (!isCameraReady) return;
     let cancelled = false;
     const sr = shootRef.current;
 
     async function poll() {
       const ctx = pollCtxRef.current;
-      if (cancelled || ctx.isSaving || !videoRef.current?.videoWidth) return;
+      if (cancelled || ctx.isSaving) return;
       try {
         const res = await fetch(`${getApiBase()}/camera/shoot`, { cache: "no-store" });
         if (res.status === 204) return;
@@ -347,13 +333,13 @@ export default function Kiosk({ onAdminRequest }) {
           await fetch(`${getApiBase()}/camera/shoot/complete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestId: request.id }) });
           sr.completedId = request.id;
         } finally { sr.activeId = ""; }
-      } catch { /* silent */ }
+      } catch { /* silent — local server unreachable */ }
     }
 
     poll();
     const id = setInterval(poll, SHOOT_POLL_MS);
     return () => { cancelled = true; clearInterval(id); };
-  }, [page, isCameraReady]);
+  }, [page]);
 
   const resetPage = () => {
     setPage("idle");

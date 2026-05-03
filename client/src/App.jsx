@@ -7,7 +7,7 @@ import {
 } from "./thermalOverlay";
 import Kiosk from "./Kiosk";
 import Admin from "./Admin";
-import { getApiBase, resolveApiBase, drainPhotoQueue } from "./api.js";
+import { getApiBase, syncPhotoToCloud, drainPhotoQueue } from "./api.js";
 
 const SHOOT_POLL_INTERVAL_MS = 2500;
 const ANALYSIS_TODO = [
@@ -175,8 +175,8 @@ function CameraApp() {
   }, [loadGallery, startCamera, stopCamera]);
 
   useEffect(() => {
-    resolveApiBase().then(() => drainPhotoQueue());
-    const handleOnline = async () => { await resolveApiBase(); drainPhotoQueue(); };
+    drainPhotoQueue();
+    const handleOnline = () => drainPhotoQueue();
     window.addEventListener("online", handleOnline);
     return () => window.removeEventListener("online", handleOnline);
   }, []);
@@ -268,12 +268,14 @@ function CameraApp() {
   async function saveAutoAnnotatedPhoto(rawImage, scale) {
     const imageData = await createAnnotatedJpegFromSource(rawImage.src, scale);
     setStatus("Saving photo...");
+    const payload = { imageData, temperature: scale.temperature, ambiance: scale.ambiance };
     const response = await fetch(`${getApiBase()}/photos`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageData, temperature: scale.temperature, ambiance: scale.ambiance })
+      body: JSON.stringify(payload)
     });
     const photo = await readJson(response);
+    syncPhotoToCloud(payload); // background cloud sync
     setPhotos((current) => [photo, ...current]);
     setStatus("Photo saved with automatic thermal markers.");
   }

@@ -2885,6 +2885,23 @@ video {
   outline-offset: -2px;
 }
 
+.setting-select {
+  background: #050607;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #f7f3ea;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  min-width: 200px;
+  cursor: pointer;
+}
+
+.setting-select:focus {
+  outline: 2px solid #2d8cff;
+  outline-offset: -2px;
+}
+
 /* Toggle switch */
 .toggle-switch {
   position: relative;

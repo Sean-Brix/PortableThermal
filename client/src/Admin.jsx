@@ -10,7 +10,6 @@ import {
   Save,
   Settings
 } from "lucide-react";
-
 const API_BASE = "/api";
 
 const COMPARATIVE_RECOMMENDATIONS = [
@@ -389,13 +388,13 @@ function SettingsPage({
         <div className="setting-item">
           <div className="setting-item-text">
             <span className="setting-item-label">Local Server URL</span>
-            <p>Fallback API when cloud is unreachable — enter the RasPi's address (e.g. http://192.168.1.50:3000). Saved locally on this device only.</p>
+            <p>Address of the RasPi local server. Defaults to http://localhost:3000 — only change this if the local server runs on a different device.</p>
           </div>
           <input
             type="text"
             value={localServerUrl}
             onChange={(event) => onLocalServerUrlChange(event.target.value)}
-            placeholder="http://192.168.1.x:3000"
+            placeholder="http://localhost:3000"
             className="setting-password-input"
           />
         </div>
