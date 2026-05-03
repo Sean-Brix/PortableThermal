@@ -10,7 +10,10 @@ import {
   Save,
   Settings
 } from "lucide-react";
+import { getApiBase } from "./api.js";
+
 const API_BASE = "/api";
+const SETTINGS_CACHE_KEY = "cached_admin_settings";
 
 const COMPARATIVE_RECOMMENDATIONS = [
   { key: "normal", label: "No significant difference", action: "Continue routine monitoring.", tone: "normal" },
@@ -96,8 +99,16 @@ export default function Admin({ onAuthChange, onNavigate }) {
       if (response.status === 401) return handleSessionExpired();
       const data = await response.json();
       setSettings(data);
+      try { localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify(data)); } catch {}
     } catch {
-      setError("Failed to load settings");
+      // Cloud unreachable — load from last-known settings cache
+      const cached = localStorage.getItem(SETTINGS_CACHE_KEY);
+      if (cached) {
+        try { setSettings(JSON.parse(cached)); } catch {}
+        setError("Offline — showing cached settings. Changes won't save until reconnected.");
+      } else {
+        setError("Settings unavailable offline.");
+      }
     }
   };
 
@@ -109,7 +120,15 @@ export default function Admin({ onAuthChange, onNavigate }) {
       const data = await response.json();
       setSingleLogs(data.logs || []);
     } catch {
-      setError("Failed to load single scan logs");
+      // Cloud unreachable — load from local server
+      try {
+        const response = await fetch(`${getApiBase()}/admin/logs`);
+        const data = await response.json();
+        setSingleLogs(data.logs || []);
+        setError("Offline — showing local scans only.");
+      } catch {
+        setError("Logs unavailable.");
+      }
     }
   };
 
@@ -121,7 +140,15 @@ export default function Admin({ onAuthChange, onNavigate }) {
       const data = await response.json();
       setComparativeSessions(data.sessions || []);
     } catch {
-      setError("Failed to load comparative logs");
+      // Cloud unreachable — local server has no comparative sessions
+      try {
+        const response = await fetch(`${getApiBase()}/admin/comparative-sessions`);
+        const data = await response.json();
+        setComparativeSessions(data.sessions || []);
+        setError("Offline — comparative sessions sync when reconnected.");
+      } catch {
+        setError("Sessions unavailable.");
+      }
     }
   };
 

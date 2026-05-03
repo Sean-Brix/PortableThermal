@@ -153,6 +153,25 @@ app.post("/api/sensors/latest", (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ─── Admin routes (offline view of local data) ───────────────────────────────
+
+app.get("/api/admin/logs", (_req, res) => {
+  log("GET", "/api/admin/logs", `${photos.length} local photos`);
+  const logs = photos.map((p) => ({
+    id: p.id,
+    timestamp: p.createdAt,
+    temperature: p.temperature,
+    ambiance: p.ambiance,
+    classification: p.classification
+  })).reverse(); // newest first
+  res.json({ logs });
+});
+
+app.get("/api/admin/comparative-sessions", (_req, res) => {
+  log("GET", "/api/admin/comparative-sessions", "offline — empty");
+  res.json({ sessions: [] });
+});
+
 // ─── Photo routes ─────────────────────────────────────────────────────────────
 
 app.get("/api/photos", (_req, res) => {
