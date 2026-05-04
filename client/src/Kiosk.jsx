@@ -12,7 +12,15 @@ import {
   Settings
 } from "lucide-react";
 import { createAnnotatedJpegFromSource, createRawJpegFromVideo } from "./thermalOverlay";
-import { getApiBase, syncPhotoToCloud, enqueue, drainPhotoQueue } from "./api.js";
+import {
+  ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY,
+  drainComparativeSessionQueue,
+  drainPhotoQueue,
+  getApiBase,
+  syncComparativeSessionToCloud,
+  syncPhotoToCloud,
+  upsertCachedRecord
+} from "./api.js";
 const SHOOT_POLL_MS = 2500;
 const HOLD_DURATION_MS = 1500;
 
@@ -206,8 +214,13 @@ export default function Kiosk({ onAdminRequest }) {
   useEffect(() => { startCamera(); return () => stopCamera(); }, [startCamera, stopCamera]);
 
   useEffect(() => {
-    drainPhotoQueue();
-    const handleOnline = () => drainPhotoQueue();
+    const flushQueues = async () => {
+      await drainPhotoQueue();
+      await drainComparativeSessionQueue();
+    };
+
+    flushQueues();
+    const handleOnline = () => flushQueues();
     window.addEventListener("online", handleOnline);
     return () => window.removeEventListener("online", handleOnline);
   }, []);
@@ -292,15 +305,36 @@ export default function Kiosk({ onAdminRequest }) {
     const sessionId = comparativeSessionIdRef.current;
     if (!sessionId || comparativeScans.length < 2) return null;
 
+    const analysis = buildComparativeAnalysisSummary(comparativeScans);
+
     try {
       const response = await fetch(`${getApiBase()}/scan-sessions/${sessionId}/complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ analysis: buildComparativeAnalysisSummary(comparativeScans) })
+        body: JSON.stringify({ analysis })
       });
       if (!response.ok) throw new Error("Failed to save comparative analysis.");
-      return await response.json();
+      const savedSession = await response.json();
+      upsertCachedRecord(ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY, {
+        ...savedSession,
+        scans: comparativeScans,
+        analysis
+      });
+      syncComparativeSessionToCloud({ sessionId, analysis });
+      return savedSession;
     } catch (err) {
+      upsertCachedRecord(ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY, {
+        id: sessionId,
+        timestamp: comparativeScans[0]?.timestamp || new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        status: "completed",
+        source: "kiosk",
+        mode: "comparative",
+        scanCount: comparativeScans.length,
+        scans: comparativeScans,
+        analysis
+      });
+      syncComparativeSessionToCloud({ sessionId, analysis });
       setError(err.message);
       return null;
     }

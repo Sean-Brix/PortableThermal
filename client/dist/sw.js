@@ -1,6 +1,7 @@
 // v3 — cache-first navigation so the app opens instantly offline
 const CACHE_NAME = "portablethermal-shell-v3";
-const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
+// include the app start_url(s) here so launched PWA navigations are cached
+const APP_SHELL = ["/", "/index.html", "/kiosk", "/kiosk/", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -43,31 +44,37 @@ self.addEventListener("fetch", (event) => {
   // Let cloud API calls go to network — do not cache
   if (url.pathname.startsWith("/api/")) return;
 
-  // Navigation — cache-first so the app opens immediately offline.
-  // The network fetch runs in background to keep the cache fresh.
-  if (request.mode === "navigate") {
+  // Treat navigations (including some reloads) as document requests.
+  const isNavigation = request.mode === "navigate" || request.destination === "document";
+  if (isNavigation) {
     event.respondWith(
       (async () => {
-        const cached = await caches.match("/index.html");
-        if (cached) {
-          // Serve cache immediately, refresh in background
-          fetch(request)
-            .then((res) => {
-              if (res && res.ok) {
-                const clone = res.clone();
-                caches.open(CACHE_NAME).then((c) => c.put("/index.html", clone));
-              }
-            })
-            .catch(() => {});
-          return cached;
+        // Try several possible cache keys (start_url, index, root)
+        const candidates = ["/kiosk", "/kiosk/", "/index.html", "/"];
+        for (const key of candidates) {
+          const cached = await caches.match(key);
+          if (cached) {
+            // Serve cache immediately, refresh in background
+            fetch(request)
+              .then((res) => {
+                if (res && res.ok) {
+                  const clone = res.clone();
+                  caches.open(CACHE_NAME).then((c) => c.put("/index.html", clone));
+                }
+              })
+              .catch(() => {});
+            return cached;
+          }
         }
-        // Nothing in cache yet — must use network (first-ever load)
+
+        // Nothing in cache yet — try network (first-ever load)
         try {
           const res = await fetch(request);
           const clone = res.clone();
           caches.open(CACHE_NAME).then((c) => c.put("/index.html", clone));
           return res;
         } catch {
+          // Final fallback: lightweight offline HTML
           return new Response(
             "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>PortableThermal</title><style>body{margin:0;background:#111315;color:#f7f3ea;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center}p{opacity:.6;font-size:14px}</style></head><body><p>Open the app once while online to enable offline use.</p></body></html>",
             { headers: { "Content-Type": "text/html" } }

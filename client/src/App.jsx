@@ -7,7 +7,7 @@ import {
 } from "./thermalOverlay";
 import Kiosk from "./Kiosk";
 import Admin from "./Admin";
-import { getApiBase, syncPhotoToCloud, drainPhotoQueue } from "./api.js";
+import { drainComparativeSessionQueue, drainPhotoQueue, getApiBase, syncPhotoToCloud } from "./api.js";
 
 const SHOOT_POLL_INTERVAL_MS = 2500;
 const ANALYSIS_TODO = [
@@ -175,8 +175,13 @@ function CameraApp() {
   }, [loadGallery, startCamera, stopCamera]);
 
   useEffect(() => {
-    drainPhotoQueue();
-    const handleOnline = () => drainPhotoQueue();
+    const flushQueues = async () => {
+      await drainPhotoQueue();
+      await drainComparativeSessionQueue();
+    };
+
+    flushQueues();
+    const handleOnline = () => flushQueues();
     window.addEventListener("online", handleOnline);
     return () => window.removeEventListener("online", handleOnline);
   }, []);

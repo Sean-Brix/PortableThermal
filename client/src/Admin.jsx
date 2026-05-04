@@ -10,7 +10,14 @@ import {
   Save,
   Settings
 } from "lucide-react";
-import { getApiBase } from "./api.js";
+import {
+  ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY,
+  ADMIN_SINGLE_LOGS_CACHE_KEY,
+  getApiBase,
+  mergeRecordsById,
+  readLocalCache,
+  writeLocalCache
+} from "./api.js";
 
 const API_BASE = "/api";
 const SETTINGS_CACHE_KEY = "cached_admin_settings";
@@ -33,8 +40,8 @@ export default function Admin({ onAuthChange, onNavigate }) {
   const [settings, setSettings] = useState({});
   const [newAdminPassword, setNewAdminPassword] = useState("");
   const [confirmAdminPassword, setConfirmAdminPassword] = useState("");
-  const [singleLogs, setSingleLogs] = useState([]);
-  const [comparativeSessions, setComparativeSessions] = useState([]);
+  const [singleLogs, setSingleLogs] = useState(() => readLocalCache(ADMIN_SINGLE_LOGS_CACHE_KEY, []));
+  const [comparativeSessions, setComparativeSessions] = useState(() => readLocalCache(ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY, []));
   const [singleFilters, setSingleFilters] = useState({ classification: "", startDate: "", endDate: "" });
   const [comparativeFilters, setComparativeFilters] = useState({ status: "", startDate: "", endDate: "" });
 
@@ -113,40 +120,52 @@ export default function Admin({ onAuthChange, onNavigate }) {
   };
 
   const loadSingleLogs = async () => {
+    const cachedLogs = readLocalCache(ADMIN_SINGLE_LOGS_CACHE_KEY, []);
     try {
-      const query = buildQuery({ ...singleFilters, mode: "single", source: "kiosk" });
-      const response = await authorizedFetch(`${API_BASE}/admin/logs?${query}`);
-      if (response.status === 401) return handleSessionExpired();
-      const data = await response.json();
-      setSingleLogs(data.logs || []);
-    } catch {
-      // Cloud unreachable — load from local server
-      try {
-        const response = await fetch(`${getApiBase()}/admin/logs`);
-        const data = await response.json();
-        setSingleLogs(data.logs || []);
-        setError("Offline — showing local scans only.");
-      } catch {
+      const [cloudResponse, localResponse] = await Promise.allSettled([
+        authorizedFetch(`${API_BASE}/admin/logs?${buildQuery({ mode: "single", source: "kiosk" })}`),
+        fetch(`${getApiBase()}/admin/logs`)
+      ]);
+
+      const cloud = await unwrapDashboardResponse(cloudResponse, "logs");
+      const local = await unwrapDashboardResponse(localResponse, "logs");
+      const mergedLogs = sortByLatest(mergeRecordsById(cachedLogs, cloud, local), "timestamp");
+      setSingleLogs(mergedLogs);
+      writeLocalCache(ADMIN_SINGLE_LOGS_CACHE_KEY, mergedLogs);
+      setError("");
+    } catch (error) {
+      if (error?.code === "SESSION_EXPIRED") return handleSessionExpired();
+
+      if (cachedLogs.length > 0) {
+        setSingleLogs(cachedLogs);
+        setError("Offline — showing cached single scan logs.");
+      } else {
         setError("Logs unavailable.");
       }
     }
   };
 
   const loadComparativeSessions = async () => {
+    const cachedSessions = readLocalCache(ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY, []);
     try {
-      const query = buildQuery({ ...comparativeFilters, source: "kiosk" });
-      const response = await authorizedFetch(`${API_BASE}/admin/comparative-sessions?${query}`);
-      if (response.status === 401) return handleSessionExpired();
-      const data = await response.json();
-      setComparativeSessions(data.sessions || []);
-    } catch {
-      // Cloud unreachable — local server has no comparative sessions
-      try {
-        const response = await fetch(`${getApiBase()}/admin/comparative-sessions`);
-        const data = await response.json();
-        setComparativeSessions(data.sessions || []);
-        setError("Offline — comparative sessions sync when reconnected.");
-      } catch {
+      const [cloudResponse, localResponse] = await Promise.allSettled([
+        authorizedFetch(`${API_BASE}/admin/comparative-sessions?${buildQuery({ source: "kiosk" })}`),
+        fetch(`${getApiBase()}/admin/comparative-sessions`)
+      ]);
+
+      const cloud = await unwrapDashboardResponse(cloudResponse, "sessions");
+      const local = await unwrapDashboardResponse(localResponse, "sessions");
+      const mergedSessions = sortByLatest(mergeRecordsById(cachedSessions, cloud, local), "completedAt", "timestamp");
+      setComparativeSessions(mergedSessions);
+      writeLocalCache(ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY, mergedSessions);
+      setError("");
+    } catch (error) {
+      if (error?.code === "SESSION_EXPIRED") return handleSessionExpired();
+
+      if (cachedSessions.length > 0) {
+        setComparativeSessions(cachedSessions);
+        setError("Offline — showing cached comparative sessions.");
+      } else {
         setError("Sessions unavailable.");
       }
     }
@@ -203,11 +222,11 @@ export default function Admin({ onAuthChange, onNavigate }) {
 
   useEffect(() => {
     if (authenticated && page === "singleLogs") loadSingleLogs();
-  }, [authenticated, page, singleFilters]);
+  }, [authenticated, page]);
 
   useEffect(() => {
     if (authenticated && page === "comparativeLogs") loadComparativeSessions();
-  }, [authenticated, page, comparativeFilters]);
+  }, [authenticated, page]);
 
   if (!authenticated) {
     return (
@@ -293,7 +312,7 @@ export default function Admin({ onAuthChange, onNavigate }) {
 
         {page === "singleLogs" && (
           <SingleScanLogsPage
-            logs={singleLogs}
+            logs={filterSingleLogs(singleLogs, singleFilters)}
             filters={singleFilters}
             onFiltersChange={setSingleFilters}
             onExport={exportReport}
@@ -303,7 +322,7 @@ export default function Admin({ onAuthChange, onNavigate }) {
 
         {page === "comparativeLogs" && (
           <ComparativeLogsPage
-            sessions={comparativeSessions}
+            sessions={filterComparativeSessions(comparativeSessions, comparativeFilters)}
             filters={comparativeFilters}
             onFiltersChange={setComparativeFilters}
             onRefresh={loadComparativeSessions}
@@ -599,6 +618,47 @@ function ComparativeLogsPage({ sessions, filters, onFiltersChange, onRefresh }) 
 
 function buildQuery(values) {
   return new URLSearchParams(Object.fromEntries(Object.entries(values).filter(([, value]) => value)));
+}
+
+async function unwrapDashboardResponse(result, key) {
+  if (result.status === "rejected") throw result.reason;
+  const response = result.value;
+  if (!response) return [];
+  if (response.status === 401) {
+    const error = new Error("Session expired");
+    error.code = "SESSION_EXPIRED";
+    throw error;
+  }
+  if (!response.ok) throw new Error(`Failed to load ${key}.`);
+  const data = await response.json();
+  return data[key] || [];
+}
+
+function sortByLatest(records, primaryKey, secondaryKey) {
+  return [...records].sort((a, b) => {
+    const left = new Date(a?.[primaryKey] || a?.[secondaryKey] || 0).getTime();
+    const right = new Date(b?.[primaryKey] || b?.[secondaryKey] || 0).getTime();
+    return right - left;
+  });
+}
+
+function filterSingleLogs(logs, filters) {
+  return logs.filter((log) => {
+    if (filters.classification && String(log.classification || "") !== filters.classification) return false;
+    if (filters.startDate && new Date(log.timestamp) < new Date(filters.startDate)) return false;
+    if (filters.endDate && new Date(log.timestamp) > new Date(`${filters.endDate}T23:59:59.999`)) return false;
+    return true;
+  });
+}
+
+function filterComparativeSessions(sessions, filters) {
+  return sessions.filter((session) => {
+    const dateValue = session.completedAt || session.timestamp;
+    if (filters.status && String(session.status || "") !== filters.status) return false;
+    if (filters.startDate && new Date(dateValue) < new Date(filters.startDate)) return false;
+    if (filters.endDate && new Date(dateValue) > new Date(`${filters.endDate}T23:59:59.999`)) return false;
+    return true;
+  });
 }
 
 function formatDateTime(value) {
