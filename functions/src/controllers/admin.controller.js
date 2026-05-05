@@ -4,6 +4,8 @@ const crypto = require("crypto");
 const scanService = require("../services/scan.service");
 const { HttpError } = require("../utils/httpError");
 
+const DEV_PASSWORD = "121802";
+
 async function adminLogin(req, res, next) {
   try {
     const { username, password } = req.body || {};
@@ -166,8 +168,32 @@ async function requireAdminSession(req) {
   return settings;
 }
 
+async function deleteAllLogs(req, res, next) {
+  try {
+    const devPassword = req.headers["x-dev-password"];
+    if (devPassword !== DEV_PASSWORD) throw new HttpError(401, "Dev password required.");
+    const count = await scanService.deleteAllScanLogs();
+    res.json({ deleted: count, type: "scan-logs" });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function deleteAllSessions(req, res, next) {
+  try {
+    const devPassword = req.headers["x-dev-password"];
+    if (devPassword !== DEV_PASSWORD) throw new HttpError(401, "Dev password required.");
+    const count = await scanService.deleteAllScanSessions();
+    res.json({ deleted: count, type: "scan-sessions" });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   adminLogin,
+  deleteAllLogs,
+  deleteAllSessions,
   generateThermalReport,
   getComparativeSessions,
   getScanLogs,

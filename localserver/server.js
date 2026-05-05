@@ -210,6 +210,15 @@ app.delete("/api/photos/:id", (req, res) => {
   res.json({ deleted: true });
 });
 
+app.delete("/api/photos", (_req, res) => {
+  const count = photos.length;
+  photos = [];
+  shootRequest = null;
+  sensorReading = null;
+  log("DELETE", "/api/photos", `cleared ${count} photos + reset state`);
+  res.json({ deleted: count });
+});
+
 // ─── Error handlers ───────────────────────────────────────────────────────────
 
 app.use((req, res) => {

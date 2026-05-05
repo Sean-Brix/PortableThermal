@@ -3,6 +3,7 @@ import KioskPage  from "./pages/kiosk/KioskPage";
 import AdminPage  from "./pages/admin/AdminPage";
 import CameraNav  from "./pages/camera/CameraNav";
 import CameraPage from "./pages/camera/CameraPage";
+import DevPage    from "./pages/dev/DevPage";
 
 export default function AppRouter() {
   const [isAdminAuth, setIsAdminAuth] = useState(() => !!localStorage.getItem("admin_token"));
@@ -10,6 +11,7 @@ export default function AppRouter() {
     const path = window.location.pathname;
     if (path.includes("/test") && !!localStorage.getItem("admin_token")) return "test";
     if (path.includes("/admin")) return "admin";
+    if (path.includes("/dev"))   return "dev";
     return "kiosk";
   });
 
@@ -18,6 +20,7 @@ export default function AppRouter() {
       const path = window.location.pathname;
       if (path.includes("/test") && isAdminAuth) setCurrentPage("test");
       else if (path.includes("/admin"))           setCurrentPage("admin");
+      else if (path.includes("/dev"))             setCurrentPage("dev");
       else                                        setCurrentPage("kiosk");
     };
     window.addEventListener("popstate", handlePopState);
@@ -27,7 +30,7 @@ export default function AppRouter() {
   const navigateTo = (page) => {
     if (page === "test" && !isAdminAuth) page = "admin";
     setCurrentPage(page);
-    const paths = { test: "/test", kiosk: "/kiosk", admin: "/admin" };
+    const paths = { test: "/test", kiosk: "/kiosk", admin: "/admin", dev: "/dev" };
     window.history.pushState({}, "", paths[page] ?? "/kiosk");
   };
 
@@ -50,6 +53,10 @@ export default function AppRouter() {
         <CameraPage />
       </div>
     );
+  }
+
+  if (currentPage === "dev") {
+    return <DevPage onNavigate={navigateTo} />;
   }
 
   return <KioskPage onAdminRequest={() => navigateTo("admin")} />;

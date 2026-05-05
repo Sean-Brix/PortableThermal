@@ -513,12 +513,30 @@ function sanitizeSystemSettings(settings) {
   return safeSettings;
 }
 
+async function deleteAllScanLogs() {
+  const bucket = getStorage().bucket();
+  const [files] = await bucket.getFiles({ prefix: `${SCAN_LOGS_PREFIX}/` });
+  const jsonFiles = files.filter((f) => f.name.endsWith(".json"));
+  await Promise.all(jsonFiles.map((f) => f.delete()));
+  return jsonFiles.length;
+}
+
+async function deleteAllScanSessions() {
+  const bucket = getStorage().bucket();
+  const [files] = await bucket.getFiles({ prefix: `${SCAN_SESSIONS_PREFIX}/` });
+  const jsonFiles = files.filter((f) => f.name.endsWith(".json"));
+  await Promise.all(jsonFiles.map((f) => f.delete()));
+  return jsonFiles.length;
+}
+
 module.exports = {
   addScanToSession,
   classifyReading,
   completeScanSession,
   createScanLog,
   createScanSession,
+  deleteAllScanLogs,
+  deleteAllScanSessions,
   getScanLogs,
   getScanSession,
   getScanSessions,

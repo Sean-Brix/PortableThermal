@@ -18,6 +18,9 @@ import {
   readLocalCache,
   writeLocalCache
 } from "../../api.js";
+import ComparativeAnalysisModal from "../kiosk/ComparativeAnalysisModal";
+import SingleScanResultModal    from "../kiosk/SingleScanResultModal";
+import FullscreenModal          from "../../components/FullscreenModal";
 
 const BRAND_LOGO = "/assets/logo.png";
 
@@ -379,7 +382,29 @@ function ToggleItem({ label, desc, checked, onChange }) {
   );
 }
 
+const PAGE_SIZE = 20;
+
+function Pagination({ page, totalPages, onChange }) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="pagination">
+      <button className="pagination-btn" disabled={page === 1} onClick={() => onChange(page - 1)}>Previous</button>
+      <span className="pagination-info">Page {page} of {totalPages}</span>
+      <button className="pagination-btn" disabled={page === totalPages} onClick={() => onChange(page + 1)}>Next</button>
+    </div>
+  );
+}
+
 function SingleScanLogsPage({ logs, filters, onFiltersChange, onExport, onRefresh }) {
+  const [selectedLog,   setSelectedLog]   = useState(null);
+  const [fullscreenUrl, setFullscreenUrl] = useState(null);
+  const [page,          setPage]          = useState(1);
+
+  useEffect(() => { setPage(1); }, [logs]);
+
+  const totalPages = Math.max(1, Math.ceil(logs.length / PAGE_SIZE));
+  const paged      = logs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
   return (
     <div className="admin-page logs-page">
       <div className="admin-page-header">
@@ -410,30 +435,54 @@ function SingleScanLogsPage({ logs, filters, onFiltersChange, onExport, onRefres
         {logs.length === 0 ? (
           <p className="no-logs">No single scan logs found</p>
         ) : (
-          <table className="logs-table">
-            <thead>
-              <tr><th>Timestamp</th><th>Temp (C)</th><th>Ambient (C)</th><th>Delta (C)</th><th>Classification</th><th>Export</th></tr>
-            </thead>
-            <tbody>
-              {logs.map((log) => (
-                <tr key={log.id}>
-                  <td>{formatDateTime(log.timestamp)}</td>
-                  <td>{formatNumber(log.temperature)}</td>
-                  <td>{formatNumber(log.ambiance)}</td>
-                  <td>{formatDelta(log.temperature, log.ambiance)}</td>
-                  <td><span className={`badge ${String(log.classification || "Normal").toLowerCase()}`}>{log.classification || "Unknown"}</span></td>
-                  <td><button className="export-btn" onClick={() => onExport(log.id)} title="Export report"><Download size={14} /></button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <>
+            <table className="logs-table">
+              <thead>
+                <tr><th>Timestamp</th><th>Temp (C)</th><th>Ambient (C)</th><th>Delta (C)</th><th>Classification</th><th>Export</th></tr>
+              </thead>
+              <tbody>
+                {paged.map((log) => (
+                  <tr key={log.id} className="clickable-row" onClick={() => setSelectedLog(log)}>
+                    <td>{formatDateTime(log.timestamp)}</td>
+                    <td>{formatNumber(log.temperature)}</td>
+                    <td>{formatNumber(log.ambiance)}</td>
+                    <td>{formatDelta(log.temperature, log.ambiance)}</td>
+                    <td><span className={`badge ${String(log.classification || "Normal").toLowerCase()}`}>{log.classification || "Unknown"}</span></td>
+                    <td>
+                      <button className="export-btn" onClick={(e) => { e.stopPropagation(); onExport(log.id); }} title="Export report">
+                        <Download size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <Pagination page={page} totalPages={totalPages} onChange={setPage} />
+          </>
         )}
       </div>
+
+      {selectedLog && (
+        <SingleScanResultModal
+          scan={selectedLog}
+          onClose={() => setSelectedLog(null)}
+          onFullscreen={() => selectedLog.url && setFullscreenUrl(selectedLog.url)}
+        />
+      )}
+      {fullscreenUrl && <FullscreenModal url={fullscreenUrl} onClose={() => setFullscreenUrl(null)} />}
     </div>
   );
 }
 
 function ComparativeLogsPage({ sessions, filters, onFiltersChange, onRefresh }) {
+  const [selectedSession, setSelectedSession] = useState(null);
+  const [page,            setPage]            = useState(1);
+
+  useEffect(() => { setPage(1); }, [sessions]);
+
+  const totalPages = Math.max(1, Math.ceil(sessions.length / PAGE_SIZE));
+  const paged      = sessions.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
   return (
     <div className="admin-page logs-page">
       <div className="admin-page-header">
@@ -463,30 +512,40 @@ function ComparativeLogsPage({ sessions, filters, onFiltersChange, onRefresh }) 
         {sessions.length === 0 ? (
           <p className="no-logs">No comparative sessions found</p>
         ) : (
-          <table className="logs-table comparative-logs-table">
-            <thead>
-              <tr><th>Started</th><th>Completed</th><th>Photos</th><th>TRef (C)</th><th>Peak Delta (C)</th><th>Overall Analysis</th><th>Status</th></tr>
-            </thead>
-            <tbody>
-              {sessions.map((session) => {
-                const analysis = getAnalysisForSession(session);
-                const rec = analysis.overallRecommendation || COMPARATIVE_RECOMMENDATIONS[0];
-                return (
-                  <tr key={session.id}>
-                    <td>{formatDateTime(session.timestamp)}</td>
-                    <td>{session.completedAt ? formatDateTime(session.completedAt) : "-"}</td>
-                    <td>{session.scanCount ?? session.scans?.length ?? 0}</td>
-                    <td>{formatNumber(analysis.tref)}</td>
-                    <td>{formatNumber(analysis.peakDelta)}</td>
-                    <td><span className={`badge ${rec.tone || "normal"}`}>{rec.label || "Not analyzed"}</span></td>
-                    <td><span className={`session-status ${session.status === "completed" ? "completed" : "progress"}`}>{session.status || "in-progress"}</span></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <>
+            <table className="logs-table comparative-logs-table">
+              <thead>
+                <tr><th>Started</th><th>Completed</th><th>Photos</th><th>TRef (C)</th><th>Peak Delta (C)</th><th>Overall Analysis</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                {paged.map((session) => {
+                  const analysis = getAnalysisForSession(session);
+                  const rec = analysis.overallRecommendation || COMPARATIVE_RECOMMENDATIONS[0];
+                  return (
+                    <tr key={session.id} className="clickable-row" onClick={() => setSelectedSession(session)}>
+                      <td>{formatDateTime(session.timestamp)}</td>
+                      <td>{session.completedAt ? formatDateTime(session.completedAt) : "-"}</td>
+                      <td>{session.scanCount ?? session.scans?.length ?? 0}</td>
+                      <td>{formatNumber(analysis.tref)}</td>
+                      <td>{formatNumber(analysis.peakDelta)}</td>
+                      <td><span className={`badge ${rec.tone || "normal"}`}>{rec.label || "Not analyzed"}</span></td>
+                      <td><span className={`session-status ${session.status === "completed" ? "completed" : "progress"}`}>{session.status || "in-progress"}</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <Pagination page={page} totalPages={totalPages} onChange={setPage} />
+          </>
         )}
       </div>
+
+      {selectedSession && (
+        <ComparativeAnalysisModal
+          scans={selectedSession.scans || []}
+          onClose={() => setSelectedSession(null)}
+        />
+      )}
     </div>
   );
 }

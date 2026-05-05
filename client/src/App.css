@@ -3672,6 +3672,14 @@ video {
   background: rgba(255, 255, 255, 0.04);
 }
 
+.logs-table tbody tr.clickable-row {
+  cursor: pointer;
+}
+
+.logs-table tbody tr.clickable-row:hover {
+  background: rgba(45, 140, 255, 0.07);
+}
+
 .logs-table tbody tr:last-child {
   border-bottom: none;
 }
@@ -3747,4 +3755,343 @@ video {
 .export-btn:hover {
   background: rgba(45, 140, 255, 0.25);
   border-color: #2d8cff;
+}
+
+/* ─── Pagination ──────────────────────────────────────────────────────────────── */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px 0 4px;
+}
+
+.pagination-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(247, 243, 234, 0.75);
+  padding: 7px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  background: rgba(45, 140, 255, 0.15);
+  border-color: rgba(45, 140, 255, 0.4);
+  color: #2d8cff;
+}
+
+.pagination-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.pagination-info {
+  font-size: 13px;
+  color: rgba(247, 243, 234, 0.45);
+  min-width: 90px;
+  text-align: center;
+}
+
+/* ─── Dev Page ────────────────────────────────────────────────────────────────── */
+.dev-lock-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: #0a0b0d;
+}
+
+.dev-lock-box {
+  background: #13151a;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 40px 48px;
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: center;
+}
+
+.dev-lock-title {
+  font-size: 20px;
+  font-weight: 800;
+  color: #f7f3ea;
+  letter-spacing: -0.3px;
+}
+
+.dev-lock-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.dev-lock-form input {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 7px;
+  color: #f7f3ea;
+  font-size: 15px;
+  padding: 10px 14px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.dev-lock-form button {
+  background: #2d8cff;
+  border: none;
+  border-radius: 7px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.dev-lock-form button:hover { background: #1a74e8; }
+
+.dev-lock-error {
+  font-size: 13px;
+  color: #ffb3a7;
+  margin: 0;
+}
+
+.dev-back-link {
+  background: none;
+  border: none;
+  color: rgba(247, 243, 234, 0.35);
+  font-size: 13px;
+  cursor: pointer;
+  margin-top: 4px;
+}
+
+.dev-back-link:hover { color: rgba(247, 243, 234, 0.7); }
+
+/* ─── Dev page layout ─────────────────────────────────────────────────── */
+.dev-page {
+  min-height: 100vh;
+  background: #0a0b0d;
+  display: flex;
+  flex-direction: column;
+}
+
+.dev-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 32px;
+  background: #13151a;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  flex-shrink: 0;
+}
+
+.dev-badge {
+  background: #ff4444;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 1.5px;
+  padding: 3px 7px;
+  border-radius: 4px;
+}
+
+.dev-header h1 {
+  font-size: 18px;
+  font-weight: 800;
+  color: #f7f3ea;
+  margin: 0;
+  flex: 1;
+}
+
+.dev-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.dev-nav button {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: rgba(247, 243, 234, 0.65);
+  font-size: 13px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.dev-nav button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f7f3ea;
+}
+
+.dev-body {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 32px;
+  max-width: 860px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* ─── Dev section ─────────────────────────────────────────────────────── */
+.dev-section {
+  background: #13151a;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.dev-section-header {
+  padding: 16px 20px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.dev-section-header h2 {
+  font-size: 14px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: rgba(247, 243, 234, 0.55);
+  margin: 0 0 2px;
+}
+
+.dev-section-header p {
+  font-size: 12px;
+  color: rgba(247, 243, 234, 0.3);
+  margin: 0;
+}
+
+.dev-section-body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── Dev action row ──────────────────────────────────────────────────── */
+.dev-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.dev-action:last-child { border-bottom: none; }
+
+.dev-action-label {
+  font-size: 14px;
+  color: rgba(247, 243, 234, 0.8);
+  flex: 1;
+}
+
+.dev-action-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.dev-action-result {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  max-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dev-action-result.ok   { background: rgba(25, 184, 122, 0.15); color: #19b87a; }
+.dev-action-result.fail { background: rgba(255, 179, 167, 0.15); color: #ffb3a7; }
+
+.dev-run-btn {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.dev-run-btn.normal   { background: rgba(45, 140, 255, 0.15); border-color: rgba(45, 140, 255, 0.35); color: #2d8cff; }
+.dev-run-btn.warning  { background: rgba(215, 189, 101, 0.15); border-color: rgba(215, 189, 101, 0.35); color: #d7bd65; }
+.dev-run-btn.critical { background: rgba(255, 68, 68, 0.15); border-color: rgba(255, 68, 68, 0.35); color: #ff6b6b; }
+
+.dev-run-btn.confirm  { background: rgba(255, 68, 68, 0.25); border-color: #ff4444; color: #ff6b6b; }
+.dev-run-btn:disabled { opacity: 0.4; cursor: default; }
+
+.dev-cancel-btn {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: rgba(247, 243, 234, 0.45);
+  cursor: pointer;
+}
+
+.dev-cancel-btn:hover { background: rgba(255, 255, 255, 0.06); color: rgba(247, 243, 234, 0.8); }
+
+/* ─── Dev table ───────────────────────────────────────────────────────── */
+.dev-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.dev-table th {
+  text-align: left;
+  padding: 10px 20px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: rgba(247, 243, 234, 0.35);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.dev-table td {
+  padding: 10px 20px;
+  color: rgba(247, 243, 234, 0.65);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.dev-table tr:last-child td { border-bottom: none; }
+
+.dev-table-key {
+  font-family: monospace;
+  font-size: 12px;
+  color: rgba(247, 243, 234, 0.5);
+}
+
+/* ─── Dev config rows ─────────────────────────────────────────────────── */
+.dev-config-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 13px;
+  color: rgba(247, 243, 234, 0.65);
+}
+
+.dev-config-row:last-child { border-bottom: none; }
+
+.dev-config-row code {
+  font-family: monospace;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: #2d8cff;
 }
