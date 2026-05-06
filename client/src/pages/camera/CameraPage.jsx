@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, BarChart2, CheckCircle2, X, Zap } from "lucide-react";
 import { createAnnotatedJpegFromSource, createRawJpegFromFile, createRawJpegFromVideo } from "../../thermalOverlay";
-import { fetchLocalFirst, savePhotoLocalFirst } from "../../api.js";
+import { fetchLocalFirst, isLocalCacheFresh, readLocalCache, savePhotoLocalFirst, writeLocalCache } from "../../api.js";
 import Checklist from "../../components/Checklist";
 import { readJson, cameraErrorMessage, resolveThermalScale } from "../../utils/cameraUtils";
 import { classifyReading } from "../../utils/thermalUtils";
@@ -17,13 +17,15 @@ const ANALYSIS_TODO = [
 ];
 
 const SHOOT_POLL_INTERVAL_MS = 2500;
+const CAMERA_GALLERY_CACHE_KEY = "cached_camera_gallery";
+const GALLERY_CACHE_TTL_MS = 60 * 1000;
 
 export default function CameraPage() {
   const videoRef     = useRef(null);
   const streamRef    = useRef(null);
   const fileInputRef = useRef(null);
 
-  const [photos, setPhotos]                   = useState([]);
+  const [photos, setPhotos]                   = useState(() => readLocalCache(CAMERA_GALLERY_CACHE_KEY, []));
   const [status, setStatus]                   = useState("Loading gallery...");
   const [error, setError]                     = useState("");
   const [isCameraReady, setCameraReady]       = useState(false);
@@ -47,7 +49,14 @@ export default function CameraPage() {
     streamRef.current = null;
   }, []);
 
-  const loadGallery = useCallback(async () => {
+  const loadGallery = useCallback(async (force = false) => {
+    const cached = readLocalCache(CAMERA_GALLERY_CACHE_KEY, []);
+    if (cached.length > 0) setPhotos(cached);
+    if (!force && isLocalCacheFresh(CAMERA_GALLERY_CACHE_KEY, GALLERY_CACHE_TTL_MS)) {
+      setStatus(cached.length ? "Gallery loaded from cache." : "No photos yet.");
+      return;
+    }
+
     setRefreshing(true);
     setError("");
     try {
@@ -55,6 +64,7 @@ export default function CameraPage() {
       const data = await readJson(response);
       const gallery = Array.isArray(data) ? data : data.photos || [];
       setPhotos(gallery);
+      writeLocalCache(CAMERA_GALLERY_CACHE_KEY, gallery);
       setSelectedPhotoNames((cur) => cur.filter((n) => gallery.some((p) => p.name === n)));
       setStatus(gallery.length ? "Gallery updated." : "No photos yet.");
     } catch (err) {
@@ -177,7 +187,11 @@ export default function CameraPage() {
     setStatus("Saving photo...");
     const payload  = { imageData, temperature: scale.temperature, ambiance: scale.ambiance };
     const { photo, queued } = await savePhotoLocalFirst(payload);
-    setPhotos((cur) => [photo, ...cur]);
+    setPhotos((cur) => {
+      const next = [photo, ...cur];
+      writeLocalCache(CAMERA_GALLERY_CACHE_KEY, next);
+      return next;
+    });
     setStatus(queued ? "Photo queued. It will sync when online." : "Photo saved with automatic thermal markers.");
   }
 
@@ -189,7 +203,11 @@ export default function CameraPage() {
     try {
       const response = await fetchLocalFirst(`/photos/${encodeURIComponent(photo.name)}`, { method: "DELETE" }, { fallbackOnHttp: true });
       await readJson(response);
-      setPhotos((cur) => cur.filter((p) => p.name !== photo.name));
+      setPhotos((cur) => {
+        const next = cur.filter((p) => p.name !== photo.name);
+        writeLocalCache(CAMERA_GALLERY_CACHE_KEY, next);
+        return next;
+      });
       setSelectedPhotoNames((cur) => cur.filter((n) => n !== photo.name));
       setStatus("Photo deleted.");
     } catch (err) {
@@ -209,6 +227,7 @@ export default function CameraPage() {
         await fetchLocalFirst(`/photos/${encodeURIComponent(photo.name)}`, { method: "DELETE" }, { fallbackOnHttp: true });
       }
       setPhotos([]);
+      writeLocalCache(CAMERA_GALLERY_CACHE_KEY, []);
       setSelectedPhotoNames([]);
       setAnalysisPhotos(null);
       setCurrentPage(1);
@@ -278,7 +297,7 @@ export default function CameraPage() {
               <UploadIcon />
             </button>
           </div>
-          <button className="secondary-button" type="button" onClick={loadGallery} disabled={isRefreshing}>
+          <button className="secondary-button" type="button" onClick={() => loadGallery(true)} disabled={isRefreshing}>
             {isRefreshing ? "Refreshing..." : "Refresh Gallery"}
           </button>
         </div>

@@ -1,5 +1,5 @@
 // v3 — cache-first navigation so the app opens instantly offline
-const CACHE_NAME = "portablethermal-shell-v3";
+const CACHE_NAME = "portablethermal-shell-v4";
 // include the app start_url(s) here so launched PWA navigations are cached
 const APP_SHELL = ["/", "/index.html", "/kiosk", "/kiosk/", "/manifest.webmanifest", "/icons/icon-192.png", "/icons/icon-512.png"];
 

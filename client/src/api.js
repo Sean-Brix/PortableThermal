@@ -9,6 +9,7 @@ const LOCAL_SERVER_KEY = "local_server_url";
 const DEFAULT_LOCAL_URL = "http://localhost:3000";
 const QUEUE_KEY = "offline_photo_queue";
 const COMPARATIVE_QUEUE_KEY = "offline_comparative_session_queue";
+const CACHE_META_SUFFIX = ":cached_at";
 
 export const ADMIN_SINGLE_LOGS_CACHE_KEY = "cached_admin_single_logs";
 export const ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY = "cached_admin_comparative_sessions";
@@ -78,7 +79,26 @@ export function readLocalCache(key, fallback = []) {
 }
 
 export function writeLocalCache(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    localStorage.setItem(`${key}${CACHE_META_SUFFIX}`, String(Date.now()));
+  } catch {
+    // Storage can fill up with image-heavy offline data. Keep the app usable if cache writes fail.
+  }
+}
+
+export function getLocalCacheAge(key) {
+  try {
+    const cachedAt = Number(localStorage.getItem(`${key}${CACHE_META_SUFFIX}`));
+    if (!Number.isFinite(cachedAt) || cachedAt <= 0) return Infinity;
+    return Date.now() - cachedAt;
+  } catch {
+    return Infinity;
+  }
+}
+
+export function isLocalCacheFresh(key, ttlMs) {
+  return getLocalCacheAge(key) <= ttlMs;
 }
 
 export function upsertCachedRecord(key, record) {

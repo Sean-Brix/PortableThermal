@@ -3,8 +3,10 @@ import { createAnnotatedJpegFromSource, createRawJpegFromVideo } from "../../the
 import {
   ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY,
   fetchLocalFirst,
+  readLocalCache,
   savePhotoLocalFirst,
   syncComparativeSessionToCloud,
+  writeLocalCache,
   upsertCachedRecord
 } from "../../api.js";
 import { classifyReading, buildComparativeAnalysisSummary } from "../../utils/thermalUtils";
@@ -16,20 +18,37 @@ import ModeSelectPage from "./ModeSelectPage";
 import SingleScanPage from "./SingleScanPage";
 import ComparativeAnalysisPage from "./ComparativeAnalysisPage";
 
+const KIOSK_STATE_CACHE_KEY = "cached_kiosk_state";
+const KIOSK_BOOT_MIN_MS = 650;
+const VALID_KIOSK_PAGES = new Set(["idle", "modeSelect", "singleScan", "comparative"]);
+
+function readKioskState() {
+  const cached = readLocalCache(KIOSK_STATE_CACHE_KEY, {});
+  const page = VALID_KIOSK_PAGES.has(cached?.page) ? cached.page : "idle";
+  return {
+    page,
+    lastScan: cached?.lastScan || null,
+    comparativeScans: Array.isArray(cached?.comparativeScans) ? cached.comparativeScans : [],
+    comparativeSessionId: typeof cached?.comparativeSessionId === "string" ? cached.comparativeSessionId : ""
+  };
+}
+
 export default function KioskPage({ onAdminRequest }) {
+  const restoredStateRef = useRef(readKioskState());
   const videoRef               = useRef(null);
   const streamRef              = useRef(null);
   const shootRef               = useRef({ activeId: "", completedId: "" });
   const pollCtxRef             = useRef({});
-  const comparativeSessionIdRef = useRef("");
+  const comparativeSessionIdRef = useRef(restoredStateRef.current.comparativeSessionId);
 
-  const [page, setPage]                     = useState("idle");
+  const [page, setPage]                     = useState(() => restoredStateRef.current.page);
+  const [isBooting, setBooting]             = useState(true);
   const [isCameraReady, setCameraReady]     = useState(false);
   const [isSaving, setSaving]               = useState(false);
   const [error, setError]                   = useState("");
   const [status, setStatus]                 = useState("");
-  const [lastScan, setLastScan]             = useState(null);
-  const [comparativeScans, setComparativeScans] = useState([]);
+  const [lastScan, setLastScan]             = useState(() => restoredStateRef.current.lastScan);
+  const [comparativeScans, setComparativeScans] = useState(() => restoredStateRef.current.comparativeScans);
   const [showAdminModal, setShowAdminModal] = useState(false);
 
   const stopCamera = useCallback(() => {
@@ -58,7 +77,64 @@ export default function KioskPage({ onAdminRequest }) {
     }
   }, [stopCamera]);
 
-  useEffect(() => { startCamera(); return () => stopCamera(); }, [startCamera, stopCamera]);
+  useEffect(() => {
+    let cancelled = false;
+    const startedAt = Date.now();
+
+    async function bootKiosk() {
+      await startCamera();
+      const remaining = Math.max(0, KIOSK_BOOT_MIN_MS - (Date.now() - startedAt));
+      window.setTimeout(() => {
+        if (!cancelled) setBooting(false);
+      }, remaining);
+    }
+
+    bootKiosk();
+    return () => {
+      cancelled = true;
+      stopCamera();
+    };
+  }, [startCamera, stopCamera]);
+
+  useEffect(() => {
+    try {
+      writeLocalCache(KIOSK_STATE_CACHE_KEY, {
+        page,
+        lastScan,
+        comparativeScans,
+        comparativeSessionId: comparativeSessionIdRef.current,
+        updatedAt: new Date().toISOString()
+      });
+    } catch {
+      // If storage is full, the kiosk still runs; queued photo sync keeps the important payloads.
+    }
+  }, [page, lastScan, comparativeScans]);
+
+  useEffect(() => {
+    let wakeLock = null;
+    let disposed = false;
+
+    async function requestWakeLock() {
+      if (!("wakeLock" in navigator) || document.visibilityState !== "visible") return;
+      try {
+        wakeLock = await navigator.wakeLock.request("screen");
+      } catch {
+        wakeLock = null;
+      }
+    }
+
+    const handleVisibilityChange = () => {
+      if (!disposed && document.visibilityState === "visible") requestWakeLock();
+    };
+
+    requestWakeLock();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      wakeLock?.release?.().catch(() => {});
+    };
+  }, []);
 
   const videoCallbackRef = useCallback((el) => {
     videoRef.current = el;
@@ -211,6 +287,17 @@ export default function KioskPage({ onAdminRequest }) {
     setStatus("");
   };
 
+  if (isBooting) {
+    return (
+      <div className="kiosk-shell">
+        <KioskBootScreen
+          restored={restoredStateRef.current.page !== "idle" || restoredStateRef.current.comparativeScans.length > 0}
+          scanCount={restoredStateRef.current.comparativeScans.length}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="kiosk-shell">
       {page === "idle" && <KioskAdminHint onPress={() => setShowAdminModal(true)} />}
@@ -258,6 +345,23 @@ export default function KioskPage({ onAdminRequest }) {
           onBack={resetPage}
         />
       )}
+    </div>
+  );
+}
+
+function KioskBootScreen({ restored, scanCount }) {
+  return (
+    <div className="kiosk-page kiosk-boot-screen">
+      <div className="kiosk-boot-mark">
+        <span />
+        <span />
+        <span />
+      </div>
+      <div className="kiosk-boot-copy">
+        <h1>PortableThermal</h1>
+        <p>{restored ? `Restoring kiosk session${scanCount ? ` with ${scanCount} cached scan${scanCount === 1 ? "" : "s"}` : ""}...` : "Preparing kiosk mode..."}</p>
+      </div>
+      <div className="kiosk-boot-meter"><span /></div>
     </div>
   );
 }

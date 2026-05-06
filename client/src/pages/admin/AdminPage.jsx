@@ -14,6 +14,7 @@ import {
   ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY,
   ADMIN_SINGLE_LOGS_CACHE_KEY,
   getApiBase,
+  isLocalCacheFresh,
   mergeRecordsById,
   readLocalCache,
   writeLocalCache
@@ -26,6 +27,8 @@ const BRAND_LOGO = "/assets/logo.png";
 
 const API_BASE = "/api";
 const SETTINGS_CACHE_KEY = "cached_admin_settings";
+const DASHBOARD_CACHE_TTL_MS = 60 * 1000;
+const SETTINGS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const COMPARATIVE_RECOMMENDATIONS = [
   { key: "normal",   label: "No significant difference", action: "Continue routine monitoring.",                             tone: "normal"   },
@@ -42,7 +45,8 @@ export default function Admin({ onAuthChange, onNavigate }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [settings, setSettings] = useState({});
+  const [settings, setSettings] = useState(() => readLocalCache(SETTINGS_CACHE_KEY, {}));
+  const [adminLoading, setAdminLoading] = useState({ settings: false, singleLogs: false, comparativeLogs: false });
   const [newAdminPassword, setNewAdminPassword] = useState("");
   const [confirmAdminPassword, setConfirmAdminPassword] = useState("");
   const [singleLogs, setSingleLogs] = useState(() => readLocalCache(ADMIN_SINGLE_LOGS_CACHE_KEY, []));
@@ -98,26 +102,40 @@ export default function Admin({ onAuthChange, onNavigate }) {
     setError("Admin session expired. Please log in again.");
   };
 
-  const loadSettings = async () => {
+  const setPageLoading = (key, value) => {
+    setAdminLoading((current) => ({ ...current, [key]: value }));
+  };
+
+  const loadSettings = async (force = false) => {
+    const cached = readLocalCache(SETTINGS_CACHE_KEY, {});
+    if (Object.keys(cached).length > 0) setSettings(cached);
+    if (!force && Object.keys(cached).length > 0 && isLocalCacheFresh(SETTINGS_CACHE_KEY, SETTINGS_CACHE_TTL_MS)) return;
+
+    setPageLoading("settings", true);
     try {
       const response = await authorizedFetch(`${API_BASE}/admin/settings`);
       if (response.status === 401) return handleSessionExpired();
       const data = await response.json();
       setSettings(data);
-      try { localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify(data)); } catch {}
+      try { writeLocalCache(SETTINGS_CACHE_KEY, data); } catch {}
+      setError("");
     } catch {
-      const cached = localStorage.getItem(SETTINGS_CACHE_KEY);
-      if (cached) {
-        try { setSettings(JSON.parse(cached)); } catch {}
+      if (Object.keys(cached).length > 0) {
         setError("Offline — showing cached settings. Changes won't save until reconnected.");
       } else {
         setError("Settings unavailable offline.");
       }
+    } finally {
+      setPageLoading("settings", false);
     }
   };
 
-  const loadSingleLogs = async () => {
+  const loadSingleLogs = async (force = false) => {
     const cachedLogs = readLocalCache(ADMIN_SINGLE_LOGS_CACHE_KEY, []);
+    if (cachedLogs.length > 0) setSingleLogs(cachedLogs);
+    if (!force && isLocalCacheFresh(ADMIN_SINGLE_LOGS_CACHE_KEY, DASHBOARD_CACHE_TTL_MS)) return;
+
+    setPageLoading("singleLogs", true);
     try {
       const [cloudResponse, localResponse] = await Promise.allSettled([
         authorizedFetch(`${API_BASE}/admin/logs?${buildQuery({ mode: "single", source: "kiosk" })}`),
@@ -140,11 +158,17 @@ export default function Admin({ onAuthChange, onNavigate }) {
       } else {
         setError("Logs unavailable.");
       }
+    } finally {
+      setPageLoading("singleLogs", false);
     }
   };
 
-  const loadComparativeSessions = async () => {
+  const loadComparativeSessions = async (force = false) => {
     const cached = readLocalCache(ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY, []);
+    if (cached.length > 0) setComparativeSessions(cached);
+    if (!force && isLocalCacheFresh(ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY, DASHBOARD_CACHE_TTL_MS)) return;
+
+    setPageLoading("comparativeLogs", true);
     try {
       const [cloudResponse, localResponse] = await Promise.allSettled([
         authorizedFetch(`${API_BASE}/admin/comparative-sessions?${buildQuery({ source: "kiosk" })}`),
@@ -167,6 +191,8 @@ export default function Admin({ onAuthChange, onNavigate }) {
       } else {
         setError("Sessions unavailable.");
       }
+    } finally {
+      setPageLoading("comparativeLogs", false);
     }
   };
 
@@ -184,6 +210,7 @@ export default function Admin({ onAuthChange, onNavigate }) {
       if (response.status === 401) return handleSessionExpired();
       const data = await response.json();
       setSettings(data);
+      try { writeLocalCache(SETTINGS_CACHE_KEY, data); } catch {}
       setNewAdminPassword("");
       setConfirmAdminPassword("");
       setError("");
@@ -278,6 +305,7 @@ export default function Admin({ onAuthChange, onNavigate }) {
         {page === "settings" && (
           <SettingsPage
             settings={settings}
+            isLoading={adminLoading.settings}
             onSettingsChange={setSettings}
             onSave={updateSettings}
             newAdminPassword={newAdminPassword}
@@ -292,19 +320,21 @@ export default function Admin({ onAuthChange, onNavigate }) {
         {page === "singleLogs" && (
           <SingleScanLogsPage
             logs={filterSingleLogs(singleLogs, singleFilters)}
+            isLoading={adminLoading.singleLogs}
             filters={singleFilters}
             onFiltersChange={setSingleFilters}
             onExport={exportReport}
-            onRefresh={loadSingleLogs}
+            onRefresh={() => loadSingleLogs(true)}
           />
         )}
 
         {page === "comparativeLogs" && (
           <ComparativeLogsPage
             sessions={filterComparativeSessions(comparativeSessions, comparativeFilters)}
+            isLoading={adminLoading.comparativeLogs}
             filters={comparativeFilters}
             onFiltersChange={setComparativeFilters}
-            onRefresh={loadComparativeSessions}
+            onRefresh={() => loadComparativeSessions(true)}
           />
         )}
       </main>
@@ -333,11 +363,16 @@ function LoginPage({ username, onUsernameChange, password, onPasswordChange, onS
   );
 }
 
-function SettingsPage({ settings, onSettingsChange, onSave, newAdminPassword, confirmAdminPassword, onNewAdminPasswordChange, onConfirmAdminPasswordChange, localServerUrl, onLocalServerUrlChange }) {
+function SettingsPage({ settings, isLoading, onSettingsChange, onSave, newAdminPassword, confirmAdminPassword, onNewAdminPasswordChange, onConfirmAdminPasswordChange, localServerUrl, onLocalServerUrlChange }) {
   const toggle = (key) => onSettingsChange({ ...settings, [key]: !settings[key] });
+  if (isLoading && Object.keys(settings || {}).length === 0) return <SettingsSkeleton />;
+
   return (
     <div className="admin-page settings-page">
-      <div className="admin-page-header"><h2>System Settings</h2></div>
+      <div className="admin-page-header">
+        <h2>System Settings</h2>
+        {isLoading && <span className="admin-refresh-indicator">Refreshing cache</span>}
+      </div>
       <div className="settings-group">
         <ToggleItem label="Enable Scan Logging"    desc="Record kiosk captures to admin logs"          checked={settings.enableLogs || false}          onChange={() => toggle("enableLogs")} />
         <ToggleItem label="Show Thermal Markings"  desc="Display temperature labels on captured images" checked={settings.showThermalMarkings || false}  onChange={() => toggle("showThermalMarkings")} />
@@ -401,7 +436,7 @@ function Pagination({ page, totalPages, onChange }) {
   );
 }
 
-function SingleScanLogsPage({ logs, filters, onFiltersChange, onExport, onRefresh }) {
+function SingleScanLogsPage({ logs, isLoading, filters, onFiltersChange, onExport, onRefresh }) {
   const [selectedLog,   setSelectedLog]   = useState(null);
   const [fullscreenUrl, setFullscreenUrl] = useState(null);
   const [page,          setPage]          = useState(1);
@@ -415,7 +450,9 @@ function SingleScanLogsPage({ logs, filters, onFiltersChange, onExport, onRefres
     <div className="admin-page logs-page">
       <div className="admin-page-header">
         <h2>Single Scan Logs</h2>
-        <button className="icon-action-btn" onClick={onRefresh} title="Refresh"><RefreshCw size={16} /> Refresh</button>
+        <button className="icon-action-btn" onClick={onRefresh} title="Refresh" disabled={isLoading}>
+          <RefreshCw size={16} className={isLoading ? "spin-icon" : ""} /> {isLoading ? "Refreshing" : "Refresh"}
+        </button>
       </div>
       <div className="filters-section">
         <div className="filter-group">
@@ -438,10 +475,13 @@ function SingleScanLogsPage({ logs, filters, onFiltersChange, onExport, onRefres
       </div>
       <div className="logs-table-section">
         <p className="log-count">Total: {logs.length} single scan{logs.length !== 1 ? "s" : ""}</p>
-        {logs.length === 0 ? (
+        {isLoading && logs.length === 0 ? (
+          <LogsSkeleton columns={6} rows={8} />
+        ) : logs.length === 0 ? (
           <p className="no-logs">No single scan logs found</p>
         ) : (
           <>
+            {isLoading && <div className="cache-refresh-strip">Updating cached logs...</div>}
             <table className="logs-table">
               <thead>
                 <tr><th>Timestamp</th><th>Temp (C)</th><th>Ambient (C)</th><th>Delta (C)</th><th>Classification</th><th>Export</th></tr>
@@ -480,7 +520,7 @@ function SingleScanLogsPage({ logs, filters, onFiltersChange, onExport, onRefres
   );
 }
 
-function ComparativeLogsPage({ sessions, filters, onFiltersChange, onRefresh }) {
+function ComparativeLogsPage({ sessions, isLoading, filters, onFiltersChange, onRefresh }) {
   const [selectedSession, setSelectedSession] = useState(null);
   const [page,            setPage]            = useState(1);
 
@@ -493,7 +533,9 @@ function ComparativeLogsPage({ sessions, filters, onFiltersChange, onRefresh }) 
     <div className="admin-page logs-page">
       <div className="admin-page-header">
         <h2>Comparative Logs</h2>
-        <button className="icon-action-btn" onClick={onRefresh} title="Refresh"><RefreshCw size={16} /> Refresh</button>
+        <button className="icon-action-btn" onClick={onRefresh} title="Refresh" disabled={isLoading}>
+          <RefreshCw size={16} className={isLoading ? "spin-icon" : ""} /> {isLoading ? "Refreshing" : "Refresh"}
+        </button>
       </div>
       <div className="filters-section comparative-filters">
         <div className="filter-group">
@@ -515,10 +557,13 @@ function ComparativeLogsPage({ sessions, filters, onFiltersChange, onRefresh }) 
       </div>
       <div className="logs-table-section">
         <p className="log-count">Total: {sessions.length} comparative session{sessions.length !== 1 ? "s" : ""}</p>
-        {sessions.length === 0 ? (
+        {isLoading && sessions.length === 0 ? (
+          <LogsSkeleton columns={7} rows={8} />
+        ) : sessions.length === 0 ? (
           <p className="no-logs">No comparative sessions found</p>
         ) : (
           <>
+            {isLoading && <div className="cache-refresh-strip">Updating cached sessions...</div>}
             <table className="logs-table comparative-logs-table">
               <thead>
                 <tr><th>Started</th><th>Completed</th><th>Photos</th><th>TRef (C)</th><th>Peak Delta (C)</th><th>Overall Analysis</th><th>Status</th></tr>
@@ -552,6 +597,37 @@ function ComparativeLogsPage({ sessions, filters, onFiltersChange, onRefresh }) 
           onClose={() => setSelectedSession(null)}
         />
       )}
+    </div>
+  );
+}
+
+function SettingsSkeleton() {
+  return (
+    <div className="admin-page settings-page">
+      <div className="admin-page-header"><h2>System Settings</h2></div>
+      <div className="settings-group skeleton-block">
+        {Array.from({ length: 5 }).map((_, index) => (
+          <div className="setting-item skeleton-setting" key={index}>
+            <span className="skeleton-line skeleton-title" />
+            <span className="skeleton-line skeleton-copy" />
+          </div>
+        ))}
+      </div>
+      <span className="skeleton-button" />
+    </div>
+  );
+}
+
+function LogsSkeleton({ columns, rows }) {
+  return (
+    <div className="admin-skeleton-table" aria-hidden="true">
+      {Array.from({ length: rows }).map((_, rowIndex) => (
+        <div className="admin-skeleton-row" key={rowIndex}>
+          {Array.from({ length: columns }).map((__, columnIndex) => (
+            <span className="skeleton-line" key={columnIndex} />
+          ))}
+        </div>
+      ))}
     </div>
   );
 }
