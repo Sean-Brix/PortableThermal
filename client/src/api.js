@@ -26,6 +26,48 @@ export function getApiBase() {
   return url.replace(/\/api\/?$/, "").replace(/\/$/, "") + "/api";
 }
 
+export function getCloudApiBase() {
+  return CLOUD_BASE;
+}
+
+function apiPath(path) {
+  return `/${String(path || "").replace(/^\/+/, "")}`;
+}
+
+async function responseError(response, fallbackMessage) {
+  const data = await response.json().catch(() => ({}));
+  const error = new Error(data.error || fallbackMessage || `Request failed: ${response.status}`);
+  error.status = response.status;
+  return error;
+}
+
+function isValidationError(error) {
+  return error?.status >= 400 && error.status < 500 && error.status !== 404;
+}
+
+export async function fetchLocalFirst(path, options = {}, { fallbackOnHttp = false } = {}) {
+  const normalizedPath = apiPath(path);
+  let localError = null;
+
+  try {
+    const localResponse = await fetch(`${getApiBase()}${normalizedPath}`, options);
+    localResponse.apiSource = "local";
+    if (localResponse.ok || !fallbackOnHttp) return localResponse;
+    localError = await responseError(localResponse, "Local API request failed.");
+  } catch (error) {
+    localError = error;
+  }
+
+  try {
+    const cloudResponse = await fetch(`${CLOUD_BASE}${normalizedPath}`, options);
+    cloudResponse.apiSource = "cloud";
+    return cloudResponse;
+  } catch (cloudError) {
+    cloudError.localError = localError;
+    throw cloudError;
+  }
+}
+
 export function readLocalCache(key, fallback = []) {
   try {
     const raw = localStorage.getItem(key);
@@ -73,11 +115,69 @@ export async function syncPhotoToCloud(payload) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-    if (res.ok) return;
+    if (res.ok) return res.json().catch(() => true);
+    if (isValidationError({ status: res.status })) return null;
   } catch {
     // Cloud unreachable — fall through to queue
   }
   try { enqueue(payload); } catch {}
+  return null;
+}
+
+export async function savePhotoLocalFirst(payload) {
+  const request = {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  };
+
+  try {
+    const localResponse = await fetch(`${getApiBase()}/photos`, request);
+    if (localResponse.ok) {
+      const photo = await localResponse.json();
+      syncPhotoToCloud(payload);
+      return { photo, source: "local", queued: false };
+    }
+
+    const error = await responseError(localResponse, "Failed to save photo to local server.");
+    if (isValidationError(error)) throw error;
+  } catch (localError) {
+    if (isValidationError(localError)) throw localError;
+  }
+
+  try {
+    const cloudResponse = await fetch(`${CLOUD_BASE}/photos`, request);
+    if (cloudResponse.ok) {
+      return { photo: await cloudResponse.json(), source: "cloud", queued: false };
+    }
+
+    const error = await responseError(cloudResponse, "Failed to save photo to cloud.");
+    if (isValidationError(error)) throw error;
+  } catch (cloudError) {
+    if (isValidationError(cloudError)) throw cloudError;
+  }
+
+  const entry = enqueue(payload);
+  return { photo: queuedPhoto(entry), source: "queue", queued: true };
+}
+
+function queuedPhoto(entry) {
+  const createdAt = entry.queuedAt || new Date().toISOString();
+  return {
+    id: entry.id,
+    name: entry.id,
+    path: entry.id,
+    url: entry.imageData,
+    imageData: entry.imageData,
+    createdAt,
+    loggedAt: createdAt,
+    temperature: entry.temperature,
+    ambiance: entry.ambiance,
+    source: entry.source,
+    mode: entry.mode,
+    sessionId: entry.sessionId || null,
+    queued: true
+  };
 }
 
 // ─── Offline photo queue ──────────────────────────────────────────────────────

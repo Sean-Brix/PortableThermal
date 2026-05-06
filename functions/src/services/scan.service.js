@@ -67,7 +67,7 @@ async function getScanLogs(filters = {}) {
 }
 
 async function createScanSession(payload) {
-  const sessionId = randomUUID();
+  const sessionId = normalizeSessionId(payload?.sessionId || payload?.id, { generate: true });
   const timestamp = new Date().toISOString();
   
   const session = {
@@ -97,8 +97,23 @@ async function createScanSession(payload) {
   return session;
 }
 
+async function ensureScanSession(sessionId, payload = {}) {
+  const normalizedId = normalizeSessionId(sessionId);
+  const fileName = `${SCAN_SESSIONS_PREFIX}/${normalizedId}.json`;
+  const file = getStorage().bucket().file(fileName);
+  const [exists] = await file.exists();
+
+  if (exists) {
+    const [buffer] = await file.download();
+    return JSON.parse(buffer.toString("utf8"));
+  }
+
+  return createScanSession({ ...payload, sessionId: normalizedId });
+}
+
 async function addScanToSession(sessionId, scanId) {
-  const fileName = `${SCAN_SESSIONS_PREFIX}/${sessionId}.json`;
+  const normalizedId = normalizeSessionId(sessionId);
+  const fileName = `${SCAN_SESSIONS_PREFIX}/${normalizedId}.json`;
   const file = getStorage().bucket().file(fileName);
   
   const [exists] = await file.exists();
@@ -129,7 +144,8 @@ async function addScanToSession(sessionId, scanId) {
 }
 
 async function completeScanSession(sessionId, analysis = null) {
-  const fileName = `${SCAN_SESSIONS_PREFIX}/${sessionId}.json`;
+  const normalizedId = normalizeSessionId(sessionId);
+  const fileName = `${SCAN_SESSIONS_PREFIX}/${normalizedId}.json`;
   const file = getStorage().bucket().file(fileName);
   
   const [exists] = await file.exists();
@@ -226,7 +242,8 @@ async function getScanSessions(filters = {}) {
 }
 
 async function getScanSession(sessionId) {
-  const fileName = `${SCAN_SESSIONS_PREFIX}/${sessionId}.json`;
+  const normalizedId = normalizeSessionId(sessionId);
+  const fileName = `${SCAN_SESSIONS_PREFIX}/${normalizedId}.json`;
   const file = getStorage().bucket().file(fileName);
   const [exists] = await file.exists();
   if (!exists) {
@@ -448,6 +465,15 @@ function getWorstComparativeRecommendation(deltas) {
   }, getComparativeRecommendation(0));
 }
 
+function normalizeSessionId(sessionId, { generate = false } = {}) {
+  const value = `${sessionId ?? ""}`.trim();
+  if (!value && generate) return randomUUID();
+  if (!/^[A-Za-z0-9_-]{8,100}$/.test(value)) {
+    throw new HttpError(400, "Invalid session ID.");
+  }
+  return value;
+}
+
 function classifyReading(temperature, ambiance) {
   const high = Number(temperature);
   const ambient = Number(ambiance);
@@ -537,6 +563,7 @@ module.exports = {
   createScanSession,
   deleteAllScanLogs,
   deleteAllScanSessions,
+  ensureScanSession,
   getScanLogs,
   getScanSession,
   getScanSessions,

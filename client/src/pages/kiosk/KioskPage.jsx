@@ -2,11 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createAnnotatedJpegFromSource, createRawJpegFromVideo } from "../../thermalOverlay";
 import {
   ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY,
-  drainComparativeSessionQueue,
-  drainPhotoQueue,
-  getApiBase,
+  fetchLocalFirst,
+  savePhotoLocalFirst,
   syncComparativeSessionToCloud,
-  syncPhotoToCloud,
   upsertCachedRecord
 } from "../../api.js";
 import { classifyReading, buildComparativeAnalysisSummary } from "../../utils/thermalUtils";
@@ -62,13 +60,6 @@ export default function KioskPage({ onAdminRequest }) {
 
   useEffect(() => { startCamera(); return () => stopCamera(); }, [startCamera, stopCamera]);
 
-  useEffect(() => {
-    const flush = async () => { await drainPhotoQueue(); await drainComparativeSessionQueue(); };
-    flush();
-    window.addEventListener("online", flush);
-    return () => window.removeEventListener("online", flush);
-  }, []);
-
   const videoCallbackRef = useCallback((el) => {
     videoRef.current = el;
     if (el && streamRef.current && el.srcObject !== streamRef.current) {
@@ -84,7 +75,7 @@ export default function KioskPage({ onAdminRequest }) {
       let scale = overrideScale;
       if (!scale) {
         setStatus("Reading sensor...");
-        const res = await fetch(`${getApiBase()}/sensors/latest`, { cache: "no-store" });
+        const res = await fetchLocalFirst("/sensors/latest", { cache: "no-store" });
         if (!res.ok) throw new Error("Sensor unavailable. Use the shoot API to provide temperature values.");
         const data = await res.json();
         scale = { temperature: Number(data.temperature), ambiance: Number(data.ambiance ?? data.ambient) };
@@ -96,15 +87,8 @@ export default function KioskPage({ onAdminRequest }) {
       const imageData = await createAnnotatedJpegFromSource(rawImage.src, scale);
       setStatus("Saving...");
       const payload = { imageData, temperature: scale.temperature, ambiance: scale.ambiance, ...logContext };
-      const res = await fetch(`${getApiBase()}/photos`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      if (!res.ok) throw new Error("Failed to save photo to local server.");
-      const photo = await res.json();
-      syncPhotoToCloud(payload);
-      setStatus("Captured!");
+      const { photo, queued } = await savePhotoLocalFirst(payload);
+      setStatus(queued ? "Captured offline. Sync pending." : "Captured!");
       const capturedAt = photo.loggedAt || photo.createdAt || new Date().toISOString();
       return {
         ...photo,
@@ -128,10 +112,11 @@ export default function KioskPage({ onAdminRequest }) {
   }, [captureAndSave]);
 
   const addComparativeScan = useCallback(async (overrideScale = null) => {
+    if (!comparativeSessionIdRef.current) comparativeSessionIdRef.current = crypto.randomUUID();
     const scan = await captureAndSave(overrideScale, {
       source: "kiosk",
       mode: "comparative",
-      sessionId: comparativeSessionIdRef.current || undefined
+      sessionId: comparativeSessionIdRef.current
     });
     if (scan) {
       if (scan.sessionId) comparativeSessionIdRef.current = scan.sessionId;
@@ -144,20 +129,20 @@ export default function KioskPage({ onAdminRequest }) {
     if (!sessionId || comparativeScans.length < 2) return null;
     const analysis = buildComparativeAnalysisSummary(comparativeScans);
     try {
-      const res = await fetch(`${getApiBase()}/scan-sessions/${sessionId}/complete`, {
+      const res = await fetchLocalFirst(`/scan-sessions/${encodeURIComponent(sessionId)}/complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ analysis })
-      });
+      }, { fallbackOnHttp: true });
       if (!res.ok) throw new Error("Failed to save comparative analysis.");
       const saved = await res.json();
       upsertCachedRecord(ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY, { ...saved, scans: comparativeScans, analysis });
-      syncComparativeSessionToCloud({ sessionId, analysis });
+      if (res.apiSource !== "cloud") syncComparativeSessionToCloud({ sessionId, analysis });
       return saved;
     } catch (err) {
       upsertCachedRecord(ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY, {
         id: sessionId,
-        timestamp:   comparativeScans[0]?.timestamp || new Date().toISOString(),
+        timestamp:   comparativeScans[0]?.createdAt || new Date().toISOString(),
         completedAt: new Date().toISOString(),
         status: "completed",
         source: "kiosk",
@@ -193,7 +178,7 @@ export default function KioskPage({ onAdminRequest }) {
       const ctx = pollCtxRef.current;
       if (cancelled || ctx.isSaving) return;
       try {
-        const res = await fetch(`${getApiBase()}/camera/shoot`, { cache: "no-store" });
+        const res = await fetchLocalFirst("/camera/shoot", { cache: "no-store" });
         if (res.status === 204) return;
         const request = await res.json();
         if (!request?.id || request.id === sr.activeId || request.id === sr.completedId) return;
@@ -202,7 +187,7 @@ export default function KioskPage({ onAdminRequest }) {
           const scale = { temperature: Number(request.temp), ambiance: Number(request.ambient ?? request.ambiance) };
           if (ctx.page === "singleScan") await ctx.captureSingleScan(scale);
           else await ctx.addComparativeScan(scale);
-          await fetch(`${getApiBase()}/camera/shoot/complete`, {
+          await fetchLocalFirst("/camera/shoot/complete", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ requestId: request.id })

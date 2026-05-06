@@ -4,6 +4,7 @@ import AdminPage  from "./pages/admin/AdminPage";
 import CameraNav  from "./pages/camera/CameraNav";
 import CameraPage from "./pages/camera/CameraPage";
 import DevPage    from "./pages/dev/DevPage";
+import { drainComparativeSessionQueue, drainPhotoQueue } from "./api.js";
 
 export default function AppRouter() {
   const [isAdminAuth, setIsAdminAuth] = useState(() => !!localStorage.getItem("admin_token"));
@@ -26,6 +27,20 @@ export default function AppRouter() {
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, [isAdminAuth]);
+
+  useEffect(() => {
+    const flush = async () => {
+      await drainPhotoQueue();
+      await drainComparativeSessionQueue();
+    };
+    flush();
+    window.addEventListener("online", flush);
+    document.addEventListener("visibilitychange", flush);
+    return () => {
+      window.removeEventListener("online", flush);
+      document.removeEventListener("visibilitychange", flush);
+    };
+  }, []);
 
   const navigateTo = (page) => {
     if (page === "test" && !isAdminAuth) page = "admin";

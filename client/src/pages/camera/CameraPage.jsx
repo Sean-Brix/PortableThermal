@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, BarChart2, CheckCircle2, X, Zap } from "lucide-react";
 import { createAnnotatedJpegFromSource, createRawJpegFromFile, createRawJpegFromVideo } from "../../thermalOverlay";
-import { drainComparativeSessionQueue, drainPhotoQueue, getApiBase, syncPhotoToCloud } from "../../api.js";
+import { fetchLocalFirst, savePhotoLocalFirst } from "../../api.js";
 import Checklist from "../../components/Checklist";
 import { readJson, cameraErrorMessage, resolveThermalScale } from "../../utils/cameraUtils";
 import { classifyReading } from "../../utils/thermalUtils";
@@ -51,11 +51,12 @@ export default function CameraPage() {
     setRefreshing(true);
     setError("");
     try {
-      const response = await fetch(`${getApiBase()}/photos`);
+      const response = await fetchLocalFirst("/photos");
       const data = await readJson(response);
-      setPhotos(data.photos);
-      setSelectedPhotoNames((cur) => cur.filter((n) => data.photos.some((p) => p.name === n)));
-      setStatus(data.photos.length ? "Gallery updated." : "No photos yet.");
+      const gallery = Array.isArray(data) ? data : data.photos || [];
+      setPhotos(gallery);
+      setSelectedPhotoNames((cur) => cur.filter((n) => gallery.some((p) => p.name === n)));
+      setStatus(gallery.length ? "Gallery updated." : "No photos yet.");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -88,13 +89,6 @@ export default function CameraPage() {
   useEffect(() => { loadGallery(); startCamera(); return () => stopCamera(); }, [loadGallery, startCamera, stopCamera]);
 
   useEffect(() => {
-    const flush = async () => { await drainPhotoQueue(); await drainComparativeSessionQueue(); };
-    flush();
-    window.addEventListener("online", flush);
-    return () => window.removeEventListener("online", flush);
-  }, []);
-
-  useEffect(() => {
     const closeOnEscape = (e) => { if (e.key === "Escape") setSelectedPhoto(null); };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
@@ -107,14 +101,14 @@ export default function CameraPage() {
     async function pollShootRequests() {
       if (cancelled || isSaving || !videoRef.current?.videoWidth) return;
       try {
-        const response = await fetch(`${getApiBase()}/camera/shoot`, { cache: "no-store" });
+        const response = await fetchLocalFirst("/camera/shoot", { cache: "no-store" });
         if (response.status === 204) return;
         const request = await readJson(response);
         if (!request?.id || request.id === activeShootRequestRef.current || request.id === completedShootRequestRef.current) return;
         activeShootRequestRef.current = request.id;
         try {
           await captureAndSavePhoto({ temperature: request.temp, ambiance: request.ambient });
-          await fetch(`${getApiBase()}/camera/shoot/complete`, {
+          await fetchLocalFirst("/camera/shoot/complete", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ requestId: request.id })
@@ -182,15 +176,9 @@ export default function CameraPage() {
     const imageData = await createAnnotatedJpegFromSource(rawImage.src, scale);
     setStatus("Saving photo...");
     const payload  = { imageData, temperature: scale.temperature, ambiance: scale.ambiance };
-    const response = await fetch(`${getApiBase()}/photos`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    const photo = await readJson(response);
-    syncPhotoToCloud(payload);
+    const { photo, queued } = await savePhotoLocalFirst(payload);
     setPhotos((cur) => [photo, ...cur]);
-    setStatus("Photo saved with automatic thermal markers.");
+    setStatus(queued ? "Photo queued. It will sync when online." : "Photo saved with automatic thermal markers.");
   }
 
   async function deletePhoto(photo) {
@@ -199,7 +187,7 @@ export default function CameraPage() {
     setError("");
     setStatus("Deleting photo...");
     try {
-      const response = await fetch(`${getApiBase()}/photos/${encodeURIComponent(photo.name)}`, { method: "DELETE" });
+      const response = await fetchLocalFirst(`/photos/${encodeURIComponent(photo.name)}`, { method: "DELETE" }, { fallbackOnHttp: true });
       await readJson(response);
       setPhotos((cur) => cur.filter((p) => p.name !== photo.name));
       setSelectedPhotoNames((cur) => cur.filter((n) => n !== photo.name));
@@ -218,7 +206,7 @@ export default function CameraPage() {
     setStatus("Clearing all photos...");
     try {
       for (const photo of photos) {
-        await fetch(`${getApiBase()}/photos/${encodeURIComponent(photo.name)}`, { method: "DELETE" });
+        await fetchLocalFirst(`/photos/${encodeURIComponent(photo.name)}`, { method: "DELETE" }, { fallbackOnHttp: true });
       }
       setPhotos([]);
       setSelectedPhotoNames([]);

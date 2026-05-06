@@ -59,6 +59,13 @@ async function createPhoto(req, res, next) {
             notes: req.body?.notes || ""
           });
           sessionId = session.id;
+        } else {
+          await scanService.ensureScanSession(sessionId, {
+            source: "kiosk",
+            equipment: req.body?.equipment || "Unknown",
+            location: req.body?.location || "Unknown",
+            notes: req.body?.notes || ""
+          });
         }
 
         const log = await scanService.createScanLog({

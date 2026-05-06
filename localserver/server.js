@@ -11,6 +11,7 @@ const app = express();
 let shootRequest = null;  // { id, temp, ambient, createdAt, status: "pending" } | null
 let sensorReading = null; // { temperature, ambiance, updatedAt } | null
 let photos = [];          // { id, imageData, temperature, ambiance, createdAt, classification }
+let scanSessions = [];    // { id, timestamp, completedAt, scans, analysis, status, source, mode }
 
 // ─── Logger ───────────────────────────────────────────────────────────────────
 
@@ -39,6 +40,65 @@ function classifyReading(temp, ambient) {
   if (ratio > 0.5 || diff > 50) return "Critical";
   if (ratio > 0.25 || diff > 25) return "Warning";
   return "Normal";
+}
+
+function normalizeSessionId(value) {
+  const id = `${value ?? ""}`.trim();
+  if (!id) return randomUUID();
+  if (!/^[A-Za-z0-9_-]{8,100}$/.test(id)) {
+    const err = new Error("Invalid session ID.");
+    err.status = 400; throw err;
+  }
+  return id;
+}
+
+function ensureLocalSession(sessionId, attrs = {}) {
+  const id = normalizeSessionId(sessionId);
+  let session = scanSessions.find((item) => item.id === id);
+  if (!session) {
+    session = {
+      id,
+      timestamp: attrs.timestamp || new Date().toISOString(),
+      completedAt: null,
+      updatedAt: attrs.timestamp || new Date().toISOString(),
+      mode: "comparative",
+      source: attrs.source || "unknown",
+      equipment: attrs.equipment || "Unknown",
+      location: attrs.location || "Unknown",
+      notes: attrs.notes || "",
+      scans: [],
+      analysis: null,
+      status: "in-progress"
+    };
+    scanSessions.push(session);
+  }
+  return session;
+}
+
+function hydrateLocalSession(session) {
+  const scans = (session.scans || [])
+    .map((scanId) => photos.find((photo) => photo.id === scanId))
+    .filter(Boolean)
+    .map(({ imageData, ...scan }) => ({ ...scan, url: imageData }));
+
+  return {
+    ...session,
+    scans,
+    scanIds: session.scans || [],
+    scanCount: scans.length
+  };
+}
+
+function withinDateRange(timestamp, startDate, endDate) {
+  if (!timestamp) return true;
+  const value = new Date(timestamp);
+  if (startDate && value < new Date(startDate)) return false;
+  if (endDate) {
+    const end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+    if (value > end) return false;
+  }
+  return true;
 }
 
 // ─── Validation ───────────────────────────────────────────────────────────────
@@ -157,26 +217,58 @@ app.post("/api/sensors/latest", (req, res, next) => {
 
 app.get("/api/admin/logs", (_req, res) => {
   log("GET", "/api/admin/logs", `${photos.length} local photos`);
-  const logs = photos.map((p) => ({
-    id: p.id,
-    timestamp: p.createdAt,
-    temperature: p.temperature,
-    ambiance: p.ambiance,
-    classification: p.classification
-  })).reverse(); // newest first
+  const { mode, source, startDate, endDate } = _req.query || {};
+  const logs = photos
+    .filter((p) => !mode || p.mode === mode)
+    .filter((p) => !source || p.source === source)
+    .filter((p) => withinDateRange(p.createdAt, startDate, endDate))
+    .map(({ imageData, ...p }) => ({
+      ...p,
+      timestamp: p.createdAt,
+      url: imageData
+    }))
+    .reverse(); // newest first
   res.json({ logs });
 });
 
 app.get("/api/admin/comparative-sessions", (_req, res) => {
-  log("GET", "/api/admin/comparative-sessions", "offline — empty");
-  res.json({ sessions: [] });
+  const { source, status, startDate, endDate } = _req.query || {};
+  const sessions = scanSessions
+    .filter((session) => !source || session.source === source)
+    .filter((session) => !status || session.status === status)
+    .filter((session) => withinDateRange(session.completedAt || session.timestamp, startDate, endDate))
+    .map(hydrateLocalSession)
+    .sort((a, b) => new Date(b.completedAt || b.timestamp) - new Date(a.completedAt || a.timestamp));
+  log("GET", "/api/admin/comparative-sessions", `${sessions.length} local sessions`);
+  res.json({ sessions });
 });
 
 // ─── Photo routes ─────────────────────────────────────────────────────────────
 
+app.post("/api/scan-sessions/:sessionId/complete", (req, res, next) => {
+  try {
+    const sessionId = normalizeSessionId(req.params.sessionId);
+    const session = scanSessions.find((item) => item.id === sessionId);
+    if (!session) {
+      const err = new Error("Session not found.");
+      err.status = 404; throw err;
+    }
+
+    const completedAt = new Date().toISOString();
+    session.status = "completed";
+    session.completedAt = completedAt;
+    session.updatedAt = completedAt;
+    session.analysis = req.body?.analysis || null;
+
+    const hydrated = hydrateLocalSession(session);
+    log("POST", `/api/scan-sessions/${sessionId}/complete`, `${hydrated.scanCount} scans`);
+    res.json(hydrated);
+  } catch (err) { next(err); }
+});
+
 app.get("/api/photos", (_req, res) => {
   log("GET", "/api/photos", `${photos.length} photos`);
-  res.json(photos.map(({ imageData, ...meta }) => ({ ...meta, url: imageData })));
+  res.json({ photos: photos.map(({ imageData, ...meta }) => ({ ...meta, url: imageData })) });
 });
 
 app.post("/api/photos", (req, res, next) => {
@@ -187,14 +279,49 @@ app.post("/api/photos", (req, res, next) => {
     }
     const temp = Number(temperature);
     const amb  = Number(ambiance);
+    const createdAt = new Date().toISOString();
+    const id = randomUUID();
+    const name = `${Date.now()}-${id}.jpg`;
+    const mode = req.body?.mode || "single";
+    const source = req.body?.source || "unknown";
+    let sessionId = req.body?.sessionId || null;
     const photo = {
-      id: randomUUID(),
+      id,
+      name,
+      path: `local/${name}`,
       imageData,
       temperature: temp,
       ambiance: amb,
-      createdAt: new Date().toISOString(),
-      classification: classifyReading(temp, amb)
+      createdAt,
+      timestamp: createdAt,
+      classification: classifyReading(temp, amb),
+      mode,
+      source,
+      equipment: req.body?.equipment || "Unknown",
+      location: req.body?.location || "Unknown",
+      notes: req.body?.notes || "",
+      sessionId
     };
+
+    if (source === "kiosk" && mode === "comparative") {
+      sessionId = normalizeSessionId(sessionId);
+      const session = ensureLocalSession(sessionId, {
+        timestamp: createdAt,
+        source,
+        equipment: photo.equipment,
+        location: photo.location,
+        notes: photo.notes
+      });
+      if (!session.scans.includes(photo.id)) session.scans.push(photo.id);
+      session.updatedAt = createdAt;
+      photo.sessionId = session.id;
+      photo.scanLogId = photo.id;
+      photo.loggedAt = createdAt;
+    } else if (source === "kiosk" && mode === "single") {
+      photo.scanLogId = photo.id;
+      photo.loggedAt = createdAt;
+    }
+
     photos.push(photo);
     log("POST", "/api/photos", `saved id=${photo.id} temp=${temp} ambient=${amb} class=${photo.classification}`);
     const { imageData: _, ...meta } = photo;
@@ -205,7 +332,11 @@ app.post("/api/photos", (req, res, next) => {
 app.delete("/api/photos/:id", (req, res) => {
   const { id } = req.params;
   const before = photos.length;
-  photos = photos.filter((p) => p.id !== id);
+  photos = photos.filter((p) => p.id !== id && p.name !== id);
+  scanSessions = scanSessions.map((session) => ({
+    ...session,
+    scans: (session.scans || []).filter((scanId) => photos.some((photo) => photo.id === scanId))
+  }));
   log("DELETE", `/api/photos/${id}`, before !== photos.length ? "deleted" : "not found");
   res.json({ deleted: true });
 });
@@ -213,6 +344,7 @@ app.delete("/api/photos/:id", (req, res) => {
 app.delete("/api/photos", (_req, res) => {
   const count = photos.length;
   photos = [];
+  scanSessions = [];
   shootRequest = null;
   sensorReading = null;
   log("DELETE", "/api/photos", `cleared ${count} photos + reset state`);

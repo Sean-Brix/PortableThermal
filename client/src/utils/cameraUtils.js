@@ -1,4 +1,4 @@
-import { getApiBase } from "../api.js";
+import { fetchLocalFirst } from "../api.js";
 
 export async function readJson(response) {
   const data = await response.json().catch(() => ({}));
@@ -34,7 +34,7 @@ export function getManualThermalScale(temperatureValue, ambianceValue) {
 }
 
 export async function fetchSensorScale() {
-  const response = await fetch(`${getApiBase()}/sensors/latest`, { cache: "no-store" });
+  const response = await fetchLocalFirst("/sensors/latest", { cache: "no-store" });
   const reading  = await readJson(response);
   const scale    = parseThermalScale(reading.temperature, reading.ambiance ?? reading.ambient);
   if (scale.error) throw new Error(`Sensor reading is invalid. ${scale.error}`);

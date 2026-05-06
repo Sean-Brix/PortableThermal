@@ -123,9 +123,12 @@ export default function Admin({ onAuthChange, onNavigate }) {
         authorizedFetch(`${API_BASE}/admin/logs?${buildQuery({ mode: "single", source: "kiosk" })}`),
         fetch(`${getApiBase()}/admin/logs`)
       ]);
-      const cloud = await unwrapDashboardResponse(cloudResponse, "logs");
-      const local = await unwrapDashboardResponse(localResponse, "logs");
-      const merged = sortByLatest(mergeRecordsById(cachedLogs, cloud, local), "timestamp");
+      const [cloud, local] = await Promise.all([
+        readDashboardCollection(cloudResponse, "logs"),
+        readDashboardCollection(localResponse, "logs")
+      ]);
+      ensureAnyDashboardSource([cloud, local], "Logs unavailable.");
+      const merged = sortByLatest(mergeRecordsById(cachedLogs, cloud.items, local.items), "timestamp");
       setSingleLogs(merged);
       writeLocalCache(ADMIN_SINGLE_LOGS_CACHE_KEY, merged);
       setError("");
@@ -147,9 +150,12 @@ export default function Admin({ onAuthChange, onNavigate }) {
         authorizedFetch(`${API_BASE}/admin/comparative-sessions?${buildQuery({ source: "kiosk" })}`),
         fetch(`${getApiBase()}/admin/comparative-sessions`)
       ]);
-      const cloud = await unwrapDashboardResponse(cloudResponse, "sessions");
-      const local = await unwrapDashboardResponse(localResponse, "sessions");
-      const merged = sortByLatest(mergeRecordsById(cached, cloud, local), "completedAt", "timestamp");
+      const [cloud, local] = await Promise.all([
+        readDashboardCollection(cloudResponse, "sessions"),
+        readDashboardCollection(localResponse, "sessions")
+      ]);
+      ensureAnyDashboardSource([cloud, local], "Sessions unavailable.");
+      const merged = sortByLatest(mergeRecordsById(cached, cloud.items, local.items), "completedAt", "timestamp");
       setComparativeSessions(merged);
       writeLocalCache(ADMIN_COMPARATIVE_SESSIONS_CACHE_KEY, merged);
       setError("");
@@ -554,14 +560,22 @@ function buildQuery(values) {
   return new URLSearchParams(Object.fromEntries(Object.entries(values).filter(([, v]) => v)));
 }
 
-async function unwrapDashboardResponse(result, key) {
-  if (result.status === "rejected") throw result.reason;
+async function readDashboardCollection(result, key) {
+  if (result.status === "rejected") {
+    return { ok: false, items: [], error: result.reason };
+  }
+
   const response = result.value;
-  if (!response) return [];
+  if (!response) return { ok: false, items: [], error: new Error(`Failed to load ${key}.`) };
   if (response.status === 401) { const e = new Error("Session expired"); e.code = "SESSION_EXPIRED"; throw e; }
-  if (!response.ok) throw new Error(`Failed to load ${key}.`);
+  if (!response.ok) return { ok: false, items: [], error: new Error(`Failed to load ${key}.`) };
   const data = await response.json();
-  return data[key] || [];
+  return { ok: true, items: data[key] || [] };
+}
+
+function ensureAnyDashboardSource(sources, message) {
+  if (sources.some((source) => source.ok)) return;
+  throw sources.find((source) => source.error)?.error || new Error(message);
 }
 
 function sortByLatest(records, primaryKey, secondaryKey) {
