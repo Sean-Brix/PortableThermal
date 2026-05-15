@@ -2,10 +2,12 @@ import { useEffect } from "react";
 import { Maximize2 } from "lucide-react";
 import ClassificationIcon from "../../components/ClassificationIcon";
 import Checklist from "../../components/Checklist";
+import { formatTime } from "../../utils/formatUtils";
 import { EC_TODO } from "./kioskConstants";
 
 export default function SingleScanResultModal({ scan, onClose, onFullscreen }) {
   const diff = scan ? (Number(scan.temperature) - Number(scan.ambiance)).toFixed(1) : null;
+  const capturedTime = scan?.displayTime || formatTime(scan?.loggedAt || scan?.capturedAt || scan?.createdAt || scan?.timestamp);
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -53,7 +55,7 @@ export default function SingleScanResultModal({ scan, onClose, onFullscreen }) {
             </div>
 
             <div className="single-modal-timestamp">
-              <span>Captured: {scan.timestamp}</span>
+              <span>Captured: {capturedTime}</span>
             </div>
 
             <div className="single-modal-recs">

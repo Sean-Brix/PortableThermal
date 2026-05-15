@@ -22,6 +22,7 @@ import {
 import ComparativeAnalysisModal from "../kiosk/ComparativeAnalysisModal";
 import SingleScanResultModal    from "../kiosk/SingleScanResultModal";
 import FullscreenModal          from "../../components/FullscreenModal";
+import { formatDateTime as formatDisplayDateTime } from "../../utils/formatUtils";
 
 const BRAND_LOGO = "/assets/logo.png";
 
@@ -682,10 +683,7 @@ function filterComparativeSessions(sessions, filters) {
 }
 
 function formatDateTime(value) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+  return formatDisplayDateTime(value);
 }
 
 function formatNumber(value) {

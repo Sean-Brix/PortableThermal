@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, X, Zap } from "lucide-react";
 import ClassificationIcon from "../../components/ClassificationIcon";
 import Checklist from "../../components/Checklist";
 import FullscreenModal from "../../components/FullscreenModal";
+import { formatTime } from "../../utils/formatUtils";
 import { computeReferenceTemperature, getComparativeRecommendation, getWorstComparativeRecommendation } from "../../utils/thermalUtils";
 import { EC_TODO } from "./kioskConstants";
 
@@ -153,7 +154,7 @@ export default function ComparativeAnalysisModal({ scans, onClose }) {
                       <td>{tref.toFixed(1)}</td>
                       <td>{delta.toFixed(1)}</td>
                       <td><span className={`scan-badge ${rec.tone}`}>{rec.label}</span></td>
-                      <td>{scan.timestamp ?? "-"}</td>
+                      <td>{scan.displayTime || formatTime(scan.loggedAt || scan.createdAt || scan.timestamp)}</td>
                     </tr>
                   );
                 })}

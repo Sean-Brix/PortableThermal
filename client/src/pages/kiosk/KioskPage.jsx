@@ -17,6 +17,7 @@ import IdlePage from "./IdlePage";
 import ModeSelectPage from "./ModeSelectPage";
 import SingleScanPage from "./SingleScanPage";
 import ComparativeAnalysisPage from "./ComparativeAnalysisPage";
+import { formatTime } from "../../utils/formatUtils";
 
 const KIOSK_STATE_CACHE_KEY = "cached_kiosk_state";
 const KIOSK_BOOT_MIN_MS = 650;
@@ -171,7 +172,9 @@ export default function KioskPage({ onAdminRequest }) {
         classification: photo.classification || classifyReading(scale.temperature, scale.ambiance),
         temperature: scale.temperature,
         ambiance:    scale.ambiance,
-        timestamp:   new Date(capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        capturedAt,
+        timestamp:   capturedAt,
+        displayTime: formatTime(capturedAt)
       };
     } catch (err) {
       setError(err.message);

@@ -16,8 +16,15 @@ let scanSessions = [];    // { id, timestamp, completedAt, scans, analysis, stat
 // ─── Logger ───────────────────────────────────────────────────────────────────
 
 function log(method, path, extra = "") {
-  const ts = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const ts = formatLocalTime(new Date());
   console.log(`[${ts}] ${method.padEnd(6)} ${path}${extra ? "  →  " + extra : ""}`);
+}
+
+function formatLocalTime(value) {
+  return value
+    .toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })
+    .replace(/\s/g, "")
+    .toLowerCase();
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
